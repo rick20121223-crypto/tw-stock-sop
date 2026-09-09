@@ -138,12 +138,34 @@ def get_stock_data(code: str, market: str, start_date: str, end_date: str, token
 # ------------------------------------------------------------------
 # 1-1. 抓取分K資料（富果 Fugle 行情 API，60分線/5分線）
 # ------------------------------------------------------------------
-def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str) -> pd.DataFrame:
+# 依週期需要的均線長度（60分要算MA240、5分要算MA300）反推最少要回溯幾天，
+# 抓寬鬆一點含假日緩衝（實測 100天約可抓到350根60分K、10天約432根5分K）。
+_INTRADAY_LOOKBACK_DAYS = {"60": 120, "5": 20}
+
+
+def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str,
+                       lookback_days: int = None) -> pd.DataFrame:
+    """
+    抓取跨天的分K歷史資料。
+    注意：Fugle 的 intraday.candles 端點只回傳「當天」這一個交易日的K棒，
+    資料量不夠算 60分的MA240 / 5分的MA300，所以改用 historical.candles
+    帶 from/to 日期區間，才能抓到跨天的歷史分K。
+    """
+    from datetime import date, timedelta
+
     from fugle_marketdata import RestClient
 
+    if lookback_days is None:
+        lookback_days = _INTRADAY_LOOKBACK_DAYS.get(timeframe, 30)
+
     client = RestClient(api_key=fugle_api_key)
-    resp = client.stock.intraday.candles(symbol=symbol, timeframe=timeframe)
-    data = resp.get("data", [])
+    today = date.today()
+    resp = client.stock.historical.candles(
+        symbol=symbol,
+        timeframe=timeframe,
+        **{"from": str(today - timedelta(days=lookback_days)), "to": str(today)},
+    )
+    data = resp.get("data", []) if isinstance(resp, dict) else resp
 
     df = pd.DataFrame(data)
     if df.empty:
