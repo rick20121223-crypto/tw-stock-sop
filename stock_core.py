@@ -48,13 +48,28 @@ def fetch_finmind(dataset: str, data_id: str, start_date: str, end_date: str, to
         "end_date": end_date,
     }
     resp = requests.get(FINMIND_URL, headers=headers, params=params, timeout=15)
-    resp.raise_for_status()
-    payload = resp.json()
-    # FinMind 對無效 token／超額度等錯誤，HTTP 狀態碼仍是 200，
-    # 但 payload 裡的 status 不是 200，且沒有 data，要另外檢查並丟出來，
-    # 不然上層只會看到「查無資料」，看不出真正原因。
+
+    # FinMind 對無效 token／超額度／參數錯誤，可能回 400 也可能回 200，
+    # 但兩種情況都會在 body 裡帶 msg（有時還有 token_tail 方便核對貼的
+    # 是不是正確的 token）。要先試著解析 body，不能讓 raise_for_status()
+    # 在我們讀到真正原因之前就把例外丟出去，不然只會看到籠統的
+    # "400 Client Error"，看不出到底是 token 錯還是別的問題。
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {}
+
+    if not resp.ok:
+        msg = payload.get("msg", resp.text[:200] if resp.text else "未知錯誤")
+        token_tail = payload.get("token_tail")
+        detail = f"FinMind API 錯誤（HTTP {resp.status_code}）：{msg}"
+        if token_tail:
+            detail += f"（收到的 token 結尾：{token_tail}）"
+        raise RuntimeError(detail)
+
     if payload.get("status") != 200 and not payload.get("data"):
         raise RuntimeError(f"FinMind API 錯誤（status={payload.get('status')}）：{payload.get('msg', '未知錯誤')}")
+
     return pd.DataFrame(payload.get("data", []))
 
 
