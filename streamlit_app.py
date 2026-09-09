@@ -120,7 +120,9 @@ with st.spinner("正在依序分析清單內所有股票（首次載入較久，
             errors.append(result)
 
 if not rows:
-    st.error("所有股票都取得失敗，請確認 FinMind Token 是否正確。")
+    st.error("所有股票都取得失敗，請確認 FinMind Token 是否正確。以下是實際錯誤原因：")
+    for e in errors:
+        st.write(f"- {e['名稱']}（{e['代碼']}）：{e.get('訊息', '未知錯誤')}")
     st.stop()
 
 df_overview = pd.DataFrame(rows)

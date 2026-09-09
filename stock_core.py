@@ -50,6 +50,11 @@ def fetch_finmind(dataset: str, data_id: str, start_date: str, end_date: str, to
     resp = requests.get(FINMIND_URL, headers=headers, params=params, timeout=15)
     resp.raise_for_status()
     payload = resp.json()
+    # FinMind 對無效 token／超額度等錯誤，HTTP 狀態碼仍是 200，
+    # 但 payload 裡的 status 不是 200，且沒有 data，要另外檢查並丟出來，
+    # 不然上層只會看到「查無資料」，看不出真正原因。
+    if payload.get("status") != 200 and not payload.get("data"):
+        raise RuntimeError(f"FinMind API 錯誤（status={payload.get('status')}）：{payload.get('msg', '未知錯誤')}")
     return pd.DataFrame(payload.get("data", []))
 
 
