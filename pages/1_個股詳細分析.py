@@ -18,9 +18,13 @@ from sop_decision import evaluate_timeframe
 
 from stock_core import (
     STOCK_NAME_MAP,
+    TIMEFRAME_MA_PERIODS,
+    FAST_MA,
+    KEY_MA,
     get_stock_data,
     get_intraday_data,
     run_all_indicators,
+    normalize_timeframe,
     ma_slope,
 )
 
@@ -120,7 +124,7 @@ if df.empty:
     st.error(f"查無資料，請確認代碼 {stock_id} 或日期區間是否正確。")
     st.stop()
 
-df = run_all_indicators(df)
+df = run_all_indicators(df, timeframe)
 latest = df.iloc[-1]
 
 timeframe_label = {"日": "日線", "60": "60分線", "5": "5分線"}[timeframe]
@@ -170,24 +174,34 @@ fig_price.add_trace(go.Candlestick(
     increasing_line_color=UP_COLOR, decreasing_line_color=DOWN_COLOR,
     name="K線",
 ))
-ma_colors = {"MA5": "#1e88e5", "MA10": "#fb8c00", "MA20": "#8e24aa", "MA35": "#3949ab"}
+tf_key = normalize_timeframe(timeframe)
+ma_periods = TIMEFRAME_MA_PERIODS[tf_key]
+key_ma_col = KEY_MA[tf_key]
+palette = ["#1e88e5", "#fb8c00", "#8e24aa", "#3949ab"]
+ma_colors = {f"MA{p}": palette[i % len(palette)] for i, p in enumerate(ma_periods)}
 for ma_col, color in ma_colors.items():
     if ma_col in df.columns:
         fig_price.add_trace(go.Scatter(
-            x=df["date"], y=df[ma_col], mode="lines", name=ma_col,
+            x=df["date"], y=df[ma_col], mode="lines",
+            name=f"{ma_col}（生死線）" if ma_col == key_ma_col else ma_col,
             line=dict(color=color, width=1.3),
         ))
 fig_price.update_layout(height=420, xaxis_rangeslider_visible=False,
                          margin=dict(l=10, r=10, t=30, b=10))
 st.plotly_chart(fig_price, use_container_width=True)
 
-ma_cols_display = st.columns(4)
-for i, p in enumerate((5, 10, 20, 35)):
+st.caption(f"本週期（{timeframe_label}）依 SOP 使用 {' / '.join(ma_colors.keys())}，"
+           f"其中 **{key_ma_col}** 是生死線／多空分水嶺，斜率比價位本身更重要。")
+ma_cols_display = st.columns(len(ma_periods))
+for i, p in enumerate(ma_periods):
     col = f"MA{p}"
     if col in df.columns and pd.notna(latest.get(col)):
         slope = ma_slope(df, col)
         above = "站上" if latest["close"] >= latest[col] else "跌破"
-        ma_cols_display[i].metric(f"MA{p}", f"{latest[col]:.2f}", f"{above}｜{slope}")
+        label = f"{col}⭐生死線" if col == key_ma_col else col
+        ma_cols_display[i].metric(label, f"{latest[col]:.2f}", f"{above}｜{slope}")
+    else:
+        ma_cols_display[i].metric(col, "資料不足", "")
 
 st.divider()
 

@@ -10,6 +10,35 @@ FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 
 
 # ------------------------------------------------------------------
+# 週期正規化：不同呼叫端會傳「日」「日線」「60」「60分」「60分線」等
+# 各種寫法，統一轉成內部使用的 "週"/"日"/"60分"/"5分" 四種 key。
+# ------------------------------------------------------------------
+_TIMEFRAME_ALIASES = {
+    "週": "週", "週線": "週",
+    "日": "日", "日線": "日",
+    "60": "60分", "60分": "60分", "60分線": "60分",
+    "5": "5分", "5分": "5分", "5分線": "5分",
+}
+
+
+def normalize_timeframe(label: str) -> str:
+    return _TIMEFRAME_ALIASES.get(label, "日")
+
+
+# 但丁老師 SOP：各週期關鍵均線不同，斜率比價位本身更重要。
+# 週：5MA/20MA/35MA(生死線)　日：5MA/10MA/35MA(生死線)
+# 60分：20MA(多空線)/240MA(多空貢獻線)　5分：20MA(短線)/300MA(多空分水嶺)
+TIMEFRAME_MA_PERIODS = {
+    "週": (5, 20, 35),
+    "日": (5, 10, 35),
+    "60分": (20, 240),
+    "5分": (20, 300),
+}
+FAST_MA = {"週": "MA5", "日": "MA5", "60分": "MA20", "5分": "MA20"}
+KEY_MA = {"週": "MA35", "日": "MA35", "60分": "MA240", "5分": "MA300"}
+
+
+# ------------------------------------------------------------------
 # 0. 股票代碼對照表：名稱 -> (代碼, 市場類型)
 #    市場類型: "TW" = 台股個股/ETF, "INDEX" = 大盤指數, "US" = 美股
 # ------------------------------------------------------------------
@@ -247,13 +276,31 @@ def calc_kd(df: pd.DataFrame, period: int = 9) -> pd.DataFrame:
     return df
 
 
-def run_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """一次跑完全部指標計算，回傳完整 DataFrame"""
+def calc_bbi(df: pd.DataFrame, periods=(3, 6, 12, 24)) -> pd.DataFrame:
+    """
+    BBI（多空指標）：SOP 裡 5分線因 OBV 易鈍化，改用 BBI 做量價/趨勢過渡確認。
+    定義：多組均線的平均值（預設 3/6/12/24 期），本身仍以均線+MACD為主，BBI是輔助。
+    """
+    df = df.copy()
+    mas = [df["close"].rolling(window=p).mean() for p in periods]
+    df["BBI"] = sum(mas) / len(mas)
+    return df
+
+
+def run_all_indicators(df: pd.DataFrame, timeframe_label: str = "日") -> pd.DataFrame:
+    """
+    一次跑完全部指標計算，回傳完整 DataFrame。
+    timeframe_label：「週」「日」「60分」「5分」（或對應的「週線」「日線」「60分線」
+    「5分線」「60」「5」等寫法），決定均線要用哪組週期（依 SOP：
+    週 5/20/35、日 5/10/35、60分 20/240、5分 20/300）。
+    """
+    tf = normalize_timeframe(timeframe_label)
     df = calc_four_key_prices(df)
-    df = calc_ma(df)
+    df = calc_ma(df, periods=TIMEFRAME_MA_PERIODS[tf])
     df = calc_mtm(df)
     df = calc_macd(df)
     df = calc_obv(df)
-    df = calc_cci(df)   # 新增：CCI，配合MTM作為三代領先指標
+    df = calc_bbi(df)
+    df = calc_cci(df)   # CCI，配合MTM作為三代領先指標
     df = calc_kd(df)
     return df

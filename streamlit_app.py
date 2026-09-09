@@ -60,7 +60,15 @@ with st.sidebar:
     refresh = st.button("🔄 重新整理資料", use_container_width=True)
 
 st.title("📊 台股 SOP 總覽")
-st.caption("依「四關價／均線／MACD／OBV／MTM／CCI」多指標協同分析法，自動判讀清單內每檔股票的日線結論。僅供輔助判讀，不構成投資建議。")
+st.caption(
+    "依但丁老師 SOP（四關價→均線→MACD→OBV）的位階否決邏輯，快篩清單內每檔股票的"
+    "**日線**結論，方便一次掃過整份清單。僅供輔助判讀，不構成投資建議。"
+)
+st.info(
+    "這是「日線快篩」，只看單一週期。想要日/週/60分/5分整合、"
+    "更嚴謹的完整 SOP 判讀，請切到左側選單「多週期整合分析」頁面查單一個股。",
+    icon="ℹ️",
+)
 
 if not api_token:
     st.info("未設定 FinMind API Token，將使用免費額度（較容易觸發流量限制）。建議在左側輸入 Token，或部署時於 Secrets 設定 FINMIND_TOKEN。")
@@ -92,8 +100,8 @@ def analyze_one(name: str, code: str, market: str, token: str, days: int):
         df = get_stock_data(code, market, start_date, end_date, token)
         if df.empty or len(df) < 20:
             return {"名稱": name, "代碼": code, "狀態": "error", "訊息": "資料不足或查無資料"}
-        df = run_all_indicators(df)
-        verdict = evaluate_timeframe(df, "日線")
+        df = run_all_indicators(df, "日")
+        verdict = evaluate_timeframe(df, "日")
         latest = df.iloc[-1]
         return {
             "名稱": name,
