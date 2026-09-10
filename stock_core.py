@@ -188,6 +188,7 @@ def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str,
     資料量不夠算 60分的MA240 / 5分的MA300，所以改用 historical.candles
     帶 from/to 日期區間，才能抓到跨天的歷史分K。
     """
+    import time
     from datetime import date, timedelta
 
     from fugle_marketdata import RestClient
@@ -197,11 +198,30 @@ def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str,
 
     client = RestClient(api_key=fugle_api_key)
     today = date.today()
-    resp = client.stock.historical.candles(
-        symbol=symbol,
-        timeframe=timeframe,
-        **{"from": str(today - timedelta(days=lookback_days)), "to": str(today)},
-    )
+
+    # Fugle 對短時間內大量請求會回 429 Rate limit（一次查整份清單、平行
+    # 打好幾檔，很容易撞到），跟 FinMind 的逾時不一樣，要用退避重試，
+    # 不能直接當成查詢失敗。
+    max_attempts = 4
+    resp = None
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            resp = client.stock.historical.candles(
+                symbol=symbol,
+                timeframe=timeframe,
+                **{"from": str(today - timedelta(days=lookback_days)), "to": str(today)},
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if "429" not in str(exc) and "Rate limit" not in str(exc):
+                raise
+            if attempt < max_attempts - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s, 4s
+    if resp is None:
+        raise last_exc
+
     data = resp.get("data", []) if isinstance(resp, dict) else resp
 
     df = pd.DataFrame(data)
@@ -326,7 +346,7 @@ def calc_kd(df: pd.DataFrame, period: int = 9) -> pd.DataFrame:
     df = df.copy()
     low_min = df["min"].rolling(window=period).min()
     high_max = df["max"].rolling(window=period).max()
-    denom = (high_max - low_min).replace(0, pd.NA)
+    denom = (high_max - low_min).replace(0, np.nan)
     rsv = ((df["close"] - low_min) / denom * 100).fillna(50.0)
 
     if len(df) > 0:

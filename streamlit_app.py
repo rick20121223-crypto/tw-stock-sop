@@ -1,7 +1,8 @@
 """
-台股 SOP 總覽 — 多週期整合首頁
-一打開網站就能看到整份清單「週線＋日線」整合後的 SOP 結論（買進／加碼／
-觀望／賣出減碼），點「查看完整分析」直接跳到該股的日/週/60分/5分完整明細。
+📅 長線留倉 — 首頁
+一打開網站就能看到整份清單「週線＋日線」整合後的 SOP 結論，回答的問題是
+「哪些股票的中長期結構值得留倉/加碼，哪些該減碼」。想看「現在適不適合
+短打進場」，請切到左側選單「短線進場」頁面（用60分/5分判讀）。
 
 60分/5分沒有放進這份總覽：那需要額外的 Fugle API 呼叫、且只支援台股
 個股/ETF，整份清單一起跑會太慢，所以維持「點進單一股票才查」。
@@ -31,7 +32,7 @@ from multi_timeframe_check import full_check
 from sop_decision import classify_final
 from stock_core import STOCK_NAME_MAP
 
-st.set_page_config(page_title="台股 SOP 總覽", layout="wide", page_icon="📊")
+st.set_page_config(page_title="長線留倉", layout="wide", page_icon="📅")
 
 # 台股慣例：紅漲綠跌（跟美股相反）
 UP_COLOR = "#e53935"
@@ -62,12 +63,13 @@ with st.sidebar:
     years_back = st.slider("週線回溯年數（需夠長才能算出35週生死線）", 1, 5, 2)
     refresh = st.button("🔄 重新整理資料", use_container_width=True)
 
-st.title("📊 台股 SOP 總覽")
+st.title("📅 長線留倉")
 st.caption(
-    "依但丁老師完整 SOP，整合「週線＋日線」的結構判讀給出買進/加碼/觀望/"
-    "賣出減碼結論。60分/5分沒有放進這份總覽（需要額外抓資料、只支援台股"
-    "個股/ETF，整份清單一起跑會太慢），對哪檔有興趣，按「查看完整分析」"
-    "直接跳過去看日/週/60分/5分的完整明細。僅供輔助判讀，不構成投資建議。"
+    "回答「哪些股票的中長期結構值得留倉/加碼、哪些該減碼」。依但丁老師"
+    "完整 SOP，整合「週線＋日線」的結構判讀給出買進/加碼/觀望/賣出減碼"
+    "結論。想看「現在適不適合短打進場」，請切到左側選單「短線進場」頁面"
+    "（60分/5分）。對哪檔有興趣，按「查看完整分析」直接跳過去看日/週/60分"
+    "/5分的完整明細。僅供輔助判讀，不構成投資建議。"
 )
 
 if not api_token:
@@ -162,11 +164,12 @@ for r in rows:
         st.session_state["prefill_stock"] = {
             "label": r["名稱"], "stock_id": r["代碼"], "market": r["market"],
         }
-        st.switch_page("pages/2_多週期整合分析.py")
+        st.switch_page("pages/3_多週期整合分析.py")
 
 if errors:
     with st.expander(f"⚠️ {len(errors)} 檔資料取得失敗"):
         for e in errors:
             st.write(f"- {e['名稱']}（{e['代碼']}）：{e.get('訊息', '未知錯誤')}")
 
-st.caption("👉 想查清單外的股票，或看60分/5分的短線判讀，請到左側選單「多週期整合分析」頁面選「自訂代碼」。")
+st.caption("👉 想一次看整份清單的短線進場訊號，請到左側選單「短線進場」頁面；"
+           "想查清單外的股票，請到「多週期整合分析」頁面選「自訂代碼」。")
