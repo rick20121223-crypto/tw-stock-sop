@@ -1,0 +1,40 @@
+name: 台股 SOP 訊號通知
+
+on:
+  schedule:
+    # 每個台股交易日下午 17:00（台灣時間）= UTC 09:00
+    # 週末沒有交易日也照跑，反正資料不會變，不會誤發變化通知
+    - cron: "0 9 * * 1-5"
+  workflow_dispatch: {}   # 允許在 GitHub Actions 頁面手動觸發，方便測試
+
+permissions:
+  contents: write   # 要把最新的訊號狀態 commit 回 repo
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 執行 SOP 判讀並視情況推播 LINE
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+        run: python notify_line.py
+
+      - name: 把最新的訊號狀態 commit 回 repo
+        run: |
+          git config user.name "sop-notify-bot"
+          git config user.email "actions@github.com"
+          git add data/last_signals.json
+          git diff --cached --quiet || git commit -m "更新 SOP 訊號狀態（自動）"
+          git push
