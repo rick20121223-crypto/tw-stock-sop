@@ -25,11 +25,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: 執行 SOP 判讀並視情況推播 LINE
+      - name: 執行 SOP 判讀並視情況寄信通知
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        run: python notify_line.py
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python notify_email.py
 
       - name: 把最新的訊號狀態 commit 回 repo
         run: |
