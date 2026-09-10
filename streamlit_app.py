@@ -51,15 +51,14 @@ def _get_secret(key: str) -> str:
 
 
 with st.sidebar:
-    st.header("設定")
-    secret_token = _get_secret("FINMIND_TOKEN")
-    if secret_token:
-        st.success("已使用雲端 Secrets 的 FinMind Token")
-        api_token = secret_token
-    else:
-        api_token = st.text_input("FinMind API Token", type="password")
+    with st.expander("🔑 API 金鑰狀態"):
+        secret_token = _get_secret("FINMIND_TOKEN")
+        if secret_token:
+            st.success("已使用雲端 Secrets 的 FinMind Token")
+            api_token = secret_token
+        else:
+            api_token = st.text_input("FinMind API Token", type="password")
 
-    st.divider()
     years_back = st.slider("週線回溯年數（需夠長才能算出35週生死線）", 1, 5, 2)
     refresh = st.button("🔄 重新整理資料", use_container_width=True)
 

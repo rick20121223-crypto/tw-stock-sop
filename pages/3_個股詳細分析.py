@@ -56,24 +56,21 @@ def _get_secret(key: str) -> str:
 # 側邊欄：設定區
 # ------------------------------------------------------------------
 with st.sidebar:
-    st.header("設定")
+    with st.expander("🔑 API 金鑰狀態"):
+        secret_token = _get_secret("FINMIND_TOKEN")
+        secret_fugle = _get_secret("FUGLE_API_KEY")
 
-    secret_token = _get_secret("FINMIND_TOKEN")
-    secret_fugle = _get_secret("FUGLE_API_KEY")
+        if secret_token:
+            st.success("已使用雲端 Secrets 的 FinMind Token")
+            api_token = secret_token
+        else:
+            api_token = st.text_input("FinMind API Token", type="password")
 
-    if secret_token:
-        st.success("已使用雲端 Secrets 的 FinMind Token")
-        api_token = secret_token
-    else:
-        api_token = st.text_input("FinMind API Token", type="password")
-
-    if secret_fugle:
-        st.success("已使用雲端 Secrets 的 Fugle API Key")
-        fugle_api_key = secret_fugle
-    else:
-        fugle_api_key = st.text_input("Fugle 行情 API Key（60分/5分線用）", type="password")
-
-    st.divider()
+        if secret_fugle:
+            st.success("已使用雲端 Secrets 的 Fugle API Key")
+            fugle_api_key = secret_fugle
+        else:
+            fugle_api_key = st.text_input("Fugle 行情 API Key（60分/5分線用）", type="password")
 
     stock_names = list(STOCK_NAME_MAP.keys())
     choice = st.selectbox("選擇股票", stock_names + ["自訂代碼"])

@@ -38,15 +38,14 @@ def _get_secret(key: str) -> str:
 # 側邊欄：金鑰設定（優先讀 secrets，沒有的話讓使用者手動輸入）
 # ------------------------------------------------------------------
 with st.sidebar:
-    st.header("設定")
-    secret_token = _get_secret("FINMIND_TOKEN")
-    if secret_token:
-        st.success("已使用雲端 Secrets 的 FinMind Token")
-        api_token = secret_token
-    else:
-        api_token = st.text_input("FinMind API Token", type="password")
+    with st.expander("🔑 API 金鑰狀態"):
+        secret_token = _get_secret("FINMIND_TOKEN")
+        if secret_token:
+            st.success("已使用雲端 Secrets 的 FinMind Token")
+            api_token = secret_token
+        else:
+            api_token = st.text_input("FinMind API Token", type="password")
 
-    st.divider()
     lookback_days = st.slider("回溯天數（需 ≥60 天才能算出 MA35）", 60, 365, 180, step=10)
     refresh = st.button("🔄 重新整理資料", use_container_width=True)
 
@@ -150,22 +149,37 @@ c3.metric("⚪ 觀望", f"{watch_count} 檔")
 st.divider()
 
 
-def highlight_conclusion(row):
-    color = FLAT_COLOR
-    if "賣出減碼" in row["訊號"]:
-        color = DOWN_COLOR
-    elif "買進" in row["訊號"] or "加碼" in row["訊號"]:
-        color = UP_COLOR
-    return [f"color: {color}; font-weight: 600" if col == "訊號" else "" for col in row.index]
+BUCKET_STYLE = {
+    "加碼":     {"color": UP_COLOR,   "bg": "#fdecea"},
+    "買進":     {"color": UP_COLOR,   "bg": "#fdecea"},
+    "觀望":     {"color": FLAT_COLOR, "bg": "#f5f5f5"},
+    "賣出減碼": {"color": DOWN_COLOR, "bg": "#eaf6ec"},
+}
 
 
-display_cols = ["名稱", "代碼", "收盤", "訊號", "信心", "分數", "理由"]
-styled = (
-    df_overview[display_cols]
-    .style.apply(highlight_conclusion, axis=1)
-    .format({"收盤": "{:.2f}", "分數": "{:.1f}"})
+def _stock_card(row) -> str:
+    style = BUCKET_STYLE[row["結論"]]
+    price = f"{row['收盤']:.2f}" if pd.notna(row["收盤"]) else "—"
+    reason = row["理由"] if row["理由"] else ""
+    return f"""\
+<div style="border-left:4px solid {style['color']}; background:{style['bg']};
+            border-radius:6px; padding:10px 12px; height:100%;">
+  <div style="font-weight:600; font-size:13px; color:#222;">{row['名稱']}（{row['代碼']}）</div>
+  <div style="font-size:19px; font-weight:700; color:{style['color']}; margin:3px 0;">
+    {row['訊號']}
+  </div>
+  <div style="font-size:12px; color:#666;">收盤 {price} ・ 信心 {row['信心']} ・ 分數 {row['分數']:+.1f}</div>
+  <div style="font-size:11px; color:#888; margin-top:4px;">{reason}</div>
+</div>
+"""
+
+
+cards_html = "".join(_stock_card(row) for _, row in df_overview.iterrows())
+st.markdown(
+    f'<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); '
+    f'gap:10px;">{cards_html}</div>',
+    unsafe_allow_html=True,
 )
-st.dataframe(styled, use_container_width=True, hide_index=True, height=min(80 + 35 * len(df_overview), 900))
 
 if errors:
     with st.expander(f"⚠️ {len(errors)} 檔資料取得失敗"):
