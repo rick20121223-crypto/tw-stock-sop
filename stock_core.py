@@ -3,6 +3,7 @@
 被 streamlit_app.py 匯入使用，本身不會直接執行。
 """
 
+import numpy as np
 import requests
 import pandas as pd
 
@@ -59,9 +60,49 @@ STOCK_NAME_MAP = {
     "高力": ("8996", "TW"),
     "0050": ("0050", "TW"),
     "元大台灣50": ("0050", "TW"),
-    "加權指數": ("TAIEX", "INDEX"),
-    "大盤": ("TAIEX", "INDEX"),
     "SLS": ("SLS", "US"),
+    # 2026-09 依使用者券商自選股（但丁概念股／Jason／金玉峰股／觀察名單）新增，
+    # 「加權指數」「大盤」「台指近」（期貨/指數，不是個股）依使用者指示移除。
+    "天鈺": ("4961", "TW"),
+    "長廣": ("7795", "TW"),
+    "尖點": ("8021", "TW"),
+    "駐龍": ("4572", "TW"),
+    "奇鋐": ("3017", "TW"),
+    "台虹": ("8039", "TW"),
+    "騰輝電子-KY": ("6672", "TW"),
+    "營邦": ("3693", "TW"),
+    "安葆": ("7792", "TW"),
+    "陽程": ("3498", "TW"),
+    "汎銓": ("6830", "TW"),
+    "信紘科": ("6667", "TW"),
+    "萊德光電-KY": ("7717", "TW"),
+    "漢磊": ("3707", "TW"),
+    "文曄": ("3036", "TW"),
+    "順達": ("3211", "TW"),
+    "華通": ("2313", "TW"),
+    "光聖": ("6442", "TW"),
+    "全新": ("2455", "TW"),
+    "高技": ("5439", "TW"),
+    "亞翔": ("6139", "TW"),
+    "禾伸堂": ("3026", "TW"),
+    "精材": ("3374", "TW"),
+    "頎邦": ("6147", "TW"),
+    "欣興": ("3037", "TW"),
+    "鴻勁": ("7769", "TW"),
+    "主動統一台股增長": ("00981A", "TW"),
+    "金居": ("8358", "TW"),
+    "台燿": ("6274", "TW"),
+    "弘塑": ("3131", "TW"),
+    "盟立": ("2464", "TW"),
+    "中天": ("4128", "TW"),
+    "永笙-KY": ("4178", "TW"),
+    "玉山金": ("2884", "TW"),
+    "兆豐金": ("2886", "TW"),
+    "景碩": ("3189", "TW"),
+    "期元大S&P黃金": ("00635U", "TW"),
+    "元大台灣50反1": ("00632R", "TW"),
+    "新唐": ("4919", "TW"),
+    "主動復華未來50": ("00991A", "TW"),
 }
 
 
@@ -76,7 +117,12 @@ def fetch_finmind(dataset: str, data_id: str, start_date: str, end_date: str, to
         "start_date": start_date,
         "end_date": end_date,
     }
-    resp = requests.get(FINMIND_URL, headers=headers, params=params, timeout=15)
+    # 現在會同時平行打好幾個請求，偶爾會遇到單純的網路逾時（不是資料或
+    # 代碼有問題），重試一次通常就過了，不用整份清單重跑。
+    try:
+        resp = requests.get(FINMIND_URL, headers=headers, params=params, timeout=15)
+    except requests.exceptions.RequestException:
+        resp = requests.get(FINMIND_URL, headers=headers, params=params, timeout=15)
 
     # FinMind 對無效 token／超額度／參數錯誤，可能回 400 也可能回 200，
     # 但兩種情況都會在 body 裡帶 msg（有時還有 token_tail 方便核對貼的
@@ -243,22 +289,19 @@ def calc_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9)
 # 6. OBV
 # ------------------------------------------------------------------
 def calc_obv(df: pd.DataFrame, ma_period: int = 20) -> pd.DataFrame:
+    """
+    向量化版本（原本是逐列 Python for 迴圈，資料一多會很慢）：
+    股價漲加量、跌減量、平盤不變，等於「漲跌方向 x 成交量」的累加。
+    """
     df = df.copy()
     if df["volume"].isna().all():
         df["OBV"] = pd.NA
         df["OBV_MA"] = pd.NA
         return df
 
-    obv_values = [0]
-    for i in range(1, len(df)):
-        vol = df["volume"].iloc[i] if pd.notna(df["volume"].iloc[i]) else 0
-        if df["close"].iloc[i] > df["close"].iloc[i - 1]:
-            obv_values.append(obv_values[-1] + vol)
-        elif df["close"].iloc[i] < df["close"].iloc[i - 1]:
-            obv_values.append(obv_values[-1] - vol)
-        else:
-            obv_values.append(obv_values[-1])
-    df["OBV"] = obv_values
+    volume = df["volume"].fillna(0)
+    direction = np.sign(df["close"].diff().fillna(0))
+    df["OBV"] = (direction * volume).cumsum()
     df["OBV_MA"] = df["OBV"].rolling(window=ma_period).mean()
     return df
 
@@ -270,8 +313,10 @@ def calc_cci(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     df = df.copy()
     typical_price = (df["max"] + df["min"] + df["close"]) / 3
     sma = typical_price.rolling(window=period).mean()
+    # raw=True 讓 rolling().apply() 傳 numpy array 而不是 Series 進 lambda，
+    # 資料量大時快非常多（不用每個窗口都包一層 Series）。
     mean_deviation = typical_price.rolling(window=period).apply(
-        lambda x: (x - x.mean()).abs().mean()
+        lambda x: np.abs(x - x.mean()).mean(), raw=True
     )
     df["CCI"] = (typical_price - sma) / (0.015 * mean_deviation)
     return df
@@ -280,21 +325,30 @@ def calc_cci(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 # 8. KD
 # ------------------------------------------------------------------
 def calc_kd(df: pd.DataFrame, period: int = 9) -> pd.DataFrame:
+    """
+    向量化版本（原本是逐列 Python for 迴圈）。
+    K[i] = K[i-1]*2/3 + RSV[i]/3 這個遞迴式，數學上就是 alpha=1/3 的
+    EWM（指數加權平均，adjust=False）。原本第0筆固定用種子值50（不看
+    RSV[0]），所以把序列第0筆換成50再套 EWM，跟原本逐列迴圈的結果
+    完全等價，只是不用真的跑 Python for 迴圈。D 同理，用 K 當輸入。
+    """
     df = df.copy()
     low_min = df["min"].rolling(window=period).min()
     high_max = df["max"].rolling(window=period).max()
     denom = (high_max - low_min).replace(0, pd.NA)
-    rsv = (df["close"] - low_min) / denom * 100
+    rsv = ((df["close"] - low_min) / denom * 100).fillna(50.0)
 
-    k_values = [50.0]
-    d_values = [50.0]
-    for i in range(1, len(df)):
-        rsv_val = rsv.iloc[i] if pd.notna(rsv.iloc[i]) else 50.0
-        k_values.append(k_values[-1] * 2 / 3 + rsv_val / 3)
-        d_values.append(d_values[-1] * 2 / 3 + k_values[-1] / 3)
+    if len(df) > 0:
+        rsv.iloc[0] = 50.0
+    k = rsv.ewm(alpha=1 / 3, adjust=False).mean()
 
-    df["K"] = k_values
-    df["D"] = d_values
+    k_seeded = k.copy()
+    if len(df) > 0:
+        k_seeded.iloc[0] = 50.0
+    d = k_seeded.ewm(alpha=1 / 3, adjust=False).mean()
+
+    df["K"] = k
+    df["D"] = d
     return df
 
 

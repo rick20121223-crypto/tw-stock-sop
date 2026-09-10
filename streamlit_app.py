@@ -4,7 +4,7 @@
 觀望／賣出減碼），點「查看完整分析」直接跳到該股的日/週/60分/5分完整明細。
 
 60分/5分沒有放進這份總覽：那需要額外的 Fugle API 呼叫、且只支援台股
-個股/ETF，整份清單（17檔）一起跑會太慢，所以維持「點進單一股票才查」。
+個股/ETF，整份清單一起跑會太慢，所以維持「點進單一股票才查」。
 但週+日已經是 SOP 裡份量最重的長天期結構判斷，多數情況下已經足夠先篩出
 「哪些值得再點進去細看」。
 
@@ -22,6 +22,7 @@ API 金鑰設定（部署到 Streamlit Community Cloud 時）：
     本機執行時若沒有設定 secrets.toml，會改用側邊欄手動輸入。
 """
 
+import concurrent.futures
 from datetime import date
 
 import streamlit as st
@@ -108,11 +109,17 @@ def analyze_stock(name: str, code: str, market: str, token: str, start_date: str
 
 start_date = str(date(date.today().year - years_back, date.today().month, date.today().day))
 
-with st.spinner("正在依序分析清單內所有股票的週+日整合結論（首次載入較久，之後15分鐘內會用快取）..."):
+with st.spinner("正在平行分析清單內所有股票的週+日整合結論（首次載入較久，之後15分鐘內會用快取）..."):
     rows, errors = [], []
-    for name, code, market in unique_watchlist():
-        result = analyze_stock(name, code, market, api_token, start_date)
-        (rows if result["狀態"] == "ok" else errors).append(result)
+    watchlist = unique_watchlist()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(analyze_stock, name, code, market, api_token, start_date)
+            for name, code, market in watchlist
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            (rows if result["狀態"] == "ok" else errors).append(result)
 
 if not rows:
     st.error("所有股票都取得失敗，請確認 FinMind Token 是否正確。以下是實際錯誤原因：")

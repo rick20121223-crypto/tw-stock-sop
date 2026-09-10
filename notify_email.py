@@ -13,6 +13,7 @@
 本次執行後會覆寫最新結果並由 workflow 自動 commit 回 repo。
 """
 
+import concurrent.futures
 import json
 import os
 import smtplib
@@ -78,21 +79,31 @@ def main() -> None:
     changes = []
     errors = []
 
-    for name, code, market in unique_watchlist():
-        key = f"{code}_{market}"
+    def _check_one(name, code, market):
         try:
             result = full_check(code, market, api_token, "", "2024-01-01")
-            bucket = classify_final(result["最終建議"])
+            return name, code, market, classify_final(result["最終建議"]), None
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{name}（{code}）：{exc}")
-            continue
+            return name, code, market, None, str(exc)
 
-        new_state[key] = {"名稱": name, "代碼": code, "分類": bucket}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(_check_one, name, code, market)
+            for name, code, market in unique_watchlist()
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            name, code, market, bucket, error = future.result()
+            if error is not None:
+                errors.append(f"{name}（{code}）：{error}")
+                continue
 
-        prev = last_state.get(key)
-        if prev and prev.get("分類") != bucket:
-            arrow_icon = "🔺" if bucket in ("買進", "加碼") else "🔻" if bucket == "賣出減碼" else "⚪"
-            changes.append(f"{arrow_icon} {name}（{code}）：{prev.get('分類')} → {bucket}")
+            key = f"{code}_{market}"
+            new_state[key] = {"名稱": name, "代碼": code, "分類": bucket}
+
+            prev = last_state.get(key)
+            if prev and prev.get("分類") != bucket:
+                arrow_icon = "🔺" if bucket in ("買進", "加碼") else "🔻" if bucket == "賣出減碼" else "⚪"
+                changes.append(f"{arrow_icon} {name}（{code}）：{prev.get('分類')} → {bucket}")
 
     save_state(new_state)
 

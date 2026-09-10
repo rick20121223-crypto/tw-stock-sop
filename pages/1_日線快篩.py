@@ -3,6 +3,7 @@
 不需要 Fugle Key）。想看週+日整合判讀，請切到首頁「多週期整合總覽」。
 """
 
+import concurrent.futures
 import os
 import sys
 from datetime import date, timedelta
@@ -108,15 +109,20 @@ def analyze_one(name: str, code: str, market: str, token: str, days: int):
         return {"名稱": name, "代碼": code, "狀態": "error", "訊息": str(exc)}
 
 
-with st.spinner("正在依序分析清單內所有股票（首次載入較久，之後 15 分鐘內會用快取）..."):
+with st.spinner("正在平行分析清單內所有股票（首次載入較久，之後 15 分鐘內會用快取）..."):
     rows = []
     errors = []
-    for name, code, market in unique_watchlist():
-        result = analyze_one(name, code, market, api_token, lookback_days)
-        if result["狀態"] == "ok":
-            rows.append(result)
-        else:
-            errors.append(result)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(analyze_one, name, code, market, api_token, lookback_days)
+            for name, code, market in unique_watchlist()
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result["狀態"] == "ok":
+                rows.append(result)
+            else:
+                errors.append(result)
 
 if not rows:
     st.error("所有股票都取得失敗，請確認 FinMind Token 是否正確。以下是實際錯誤原因：")
