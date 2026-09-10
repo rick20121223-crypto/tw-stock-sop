@@ -12,7 +12,7 @@
 
 純規則式評分，不做任何預測或保證，僅供輔助判讀。
 被 streamlit_app.py / pages/*.py / multi_timeframe_check.py 匯入使用：
-    from sop_decision import evaluate_timeframe, combine_timeframes
+    from sop_decision import evaluate_timeframe, combine_timeframes, classify_final
 """
 
 from dataclasses import dataclass, field
@@ -348,3 +348,18 @@ def combine_timeframes(verdicts: Dict[str, Verdict]) -> dict:
             return {"最終建議": "短線買進（無長天期資料交叉驗證，僅供短打參考）", "各週期明細": detail}
 
     return {"最終建議": "觀望", "各週期明細": detail}
+
+
+# ------------------------------------------------------------------
+# 把 evaluate_timeframe 的 conclusion 或 combine_timeframes 的「最終建議」
+# （可能帶括號附註，例如「買進（部分週期訊號仍待確認）」「長線續抱、短線
+# 先出場（為日線留倉，為五分出場）」）正規化成四個分類之一，方便UI上色/排序。
+# ------------------------------------------------------------------
+def classify_final(text: str) -> str:
+    if "賣出" in text or "減碼" in text:
+        return "賣出減碼"
+    if "加碼" in text:
+        return "加碼"
+    if "買進" in text or "留倉" in text:
+        return "買進"
+    return "觀望"

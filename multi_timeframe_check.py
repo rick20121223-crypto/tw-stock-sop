@@ -58,7 +58,10 @@ def full_check(stock_id: str, market: str, api_token: str, fugle_api_key: str,
         except Exception:
             pass  # 5分資料抓取失敗，本次判讀略過該週期
 
-    return combine_timeframes(verdicts)
+    result = combine_timeframes(verdicts)
+    latest_close = df_day.iloc[-1]["close"]
+    result["收盤"] = float(latest_close) if pd.notna(latest_close) else None
+    return result
 
 
 def print_result(result: dict) -> None:

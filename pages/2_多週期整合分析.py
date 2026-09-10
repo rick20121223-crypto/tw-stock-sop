@@ -49,10 +49,29 @@ with st.sidebar:
     st.divider()
 
     stock_names = list(STOCK_NAME_MAP.keys())
-    choice = st.selectbox("選擇股票", stock_names + ["自訂代碼"])
+    options = stock_names + ["自訂代碼"]
+
+    # 從首頁總覽表點「查看」帶過來的股票：預先填好選項，並自動執行一次。
+    auto_run = False
+    prefill = st.session_state.pop("prefill_stock", None)
+    if prefill:
+        match_name = next(
+            (n for n, (c, m) in STOCK_NAME_MAP.items()
+             if c == prefill["stock_id"] and m == prefill["market"]),
+            None,
+        )
+        if match_name:
+            st.session_state["mtf_choice"] = match_name
+        else:
+            st.session_state["mtf_choice"] = "自訂代碼"
+            st.session_state["mtf_custom_code"] = prefill["stock_id"]
+            st.session_state["mtf_market"] = prefill["market"]
+        auto_run = True
+
+    choice = st.selectbox("選擇股票", options, key="mtf_choice")
     if choice == "自訂代碼":
-        custom_code = st.text_input("輸入股票代碼", value="2330")
-        market = st.radio("市場", ["TW", "INDEX", "US"], horizontal=True)
+        custom_code = st.text_input("輸入股票代碼", value="2330", key="mtf_custom_code")
+        market = st.radio("市場", ["TW", "INDEX", "US"], horizontal=True, key="mtf_market")
         stock_id, label = custom_code, custom_code
     else:
         stock_id, market = STOCK_NAME_MAP[choice]
@@ -70,7 +89,7 @@ st.caption(
     "但會提示先讓短打部位出場（為日線留倉，為五分出場）。僅供輔助判讀，不構成投資建議。"
 )
 
-if not run_button:
+if not run_button and not auto_run:
     st.info("在左側選擇股票，按「執行多週期整合分析」開始。")
     st.stop()
 
