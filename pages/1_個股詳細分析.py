@@ -80,8 +80,9 @@ with st.sidebar:
 
     if choice == "自訂代碼":
         custom_code = st.text_input("輸入股票代碼", value="2330")
-        stock_id, market = custom_code, "TW"
-        label = custom_code
+        market = st.radio("市場", ["TW", "INDEX", "US"], horizontal=True,
+                           help="TW=台股個股/ETF，INDEX=大盤指數，US=美股")
+        stock_id, label = custom_code, custom_code
     else:
         stock_id, market = STOCK_NAME_MAP[choice]
         label = choice
