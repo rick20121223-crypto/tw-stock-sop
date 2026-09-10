@@ -27,6 +27,7 @@ from sop_decision import classify_final
 from stock_core import STOCK_NAME_MAP
 
 STATE_FILE = Path(__file__).parent / "data" / "last_signals.json"
+SIGNAL_LOG_FILE = Path(__file__).parent / "data" / "signal_log.csv"
 
 # 跟網站首頁同一套配色：台股慣例紅漲綠跌（買進/加碼=紅、賣出減碼=綠）
 BUCKET_ORDER = {"加碼": 0, "買進": 1, "觀望": 2, "賣出減碼": 3}
@@ -63,6 +64,24 @@ def save_state(state: dict) -> None:
     STATE_FILE.write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def append_signal_log(today: str, rows: list) -> None:
+    """
+    每天執行都會呼叫（不管有沒有寄信），把每檔股票當天的收盤價跟SOP
+    結論都記一筆，方便之後回頭做正式回測（用當初真的記下來的訊號，
+    而不是事後用歷史資料重跑一次，比較沒有偷看未來的疑慮）。
+    """
+    import csv
+
+    SIGNAL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = SIGNAL_LOG_FILE.exists()
+    with open(SIGNAL_LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["date", "name", "code", "market", "close", "signal"])
+        for r in rows:
+            writer.writerow([today, r["name"], r["code"], r["market"], r["close"], r["signal"]])
 
 
 def send_email(subject: str, plain_body: str, html_body: str,
@@ -178,12 +197,14 @@ def main() -> None:
     changes = []
     errors = []
 
+    log_rows = []
+
     def _check_one(name, code, market):
         try:
             result = full_check(code, market, api_token, "", "2024-01-01")
-            return name, code, market, classify_final(result["最終建議"]), None
+            return name, code, market, classify_final(result["最終建議"]), result.get("收盤"), None
         except Exception as exc:  # noqa: BLE001
-            return name, code, market, None, str(exc)
+            return name, code, market, None, None, str(exc)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = [
@@ -191,13 +212,15 @@ def main() -> None:
             for name, code, market in unique_watchlist()
         ]
         for future in concurrent.futures.as_completed(futures):
-            name, code, market, bucket, error = future.result()
+            name, code, market, bucket, close, error = future.result()
             if error is not None:
                 errors.append(f"{name}（{code}）：{error}")
                 continue
 
             key = f"{code}_{market}"
             new_state[key] = {"名稱": name, "代碼": code, "分類": bucket}
+            log_rows.append({"name": name, "code": code, "market": market,
+                              "close": close, "signal": bucket})
 
             prev = last_state.get(key)
             if prev and prev.get("分類") != bucket:
@@ -209,6 +232,7 @@ def main() -> None:
     save_state(new_state)
 
     today = str(date.today())
+    append_signal_log(today, log_rows)
 
     if is_first_run:
         plain, html = build_first_run_email(today, new_state)

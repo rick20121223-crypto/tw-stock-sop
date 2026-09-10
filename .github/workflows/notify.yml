@@ -34,10 +34,10 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python notify_email.py
 
-      - name: 把最新的訊號狀態 commit 回 repo
+      - name: 把最新的訊號狀態與每日紀錄 commit 回 repo
         run: |
           git config user.name "sop-notify-bot"
           git config user.email "actions@github.com"
-          git add data/last_signals.json
-          git diff --cached --quiet || git commit -m "更新 SOP 訊號狀態（自動）"
+          git add data/last_signals.json data/signal_log.csv
+          git diff --cached --quiet || git commit -m "更新 SOP 訊號狀態與每日紀錄（自動）"
           git push
