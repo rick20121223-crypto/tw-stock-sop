@@ -73,20 +73,36 @@ with st.sidebar:
             fugle_api_key = st.text_input("Fugle 行情 API Key（60分/5分線用）", type="password")
 
     stock_names = list(STOCK_NAME_MAP.keys())
-    # 選項顯示「名稱（代碼）」，這樣下拉選單的搜尋框打代碼也找得到。
-    display_to_name = {f"{n}（{STOCK_NAME_MAP[n][0]}）": n for n in stock_names}
-    choice_display = st.selectbox("從清單選擇（可用代碼或名稱搜尋）", list(display_to_name.keys()))
-    custom_code = st.text_input("或直接輸入任意股票代碼（清單外的股票用這裡，留空則用上面選的）", value="")
 
-    if custom_code.strip():
-        stock_id = custom_code.strip()
-        label = stock_id
-        market = st.radio("市場", ["TW", "INDEX", "US"], horizontal=True,
-                           help="TW=台股個股/ETF，INDEX=大盤指數，US=美股")
+    if "detail_query" not in st.session_state:
+        st.session_state["detail_query"] = "2330"
+
+    # 只有「一個」輸入框：打清單內的中文名稱、或任意股票代碼都可以，
+    # 不用先猜要用哪一格。
+    query = st.text_input(
+        "股票代碼或名稱（清單內用中文名，清單外直接打代碼，例如 3481）",
+        key="detail_query",
+    )
+
+    def _apply_pick():
+        # 用 on_click callback 改 session_state：widget 一旦在這次
+        # script run 建立過，同一輪就不能再改它的 session_state，
+        # 要在下一輪 rerun「開始前」執行才行。
+        st.session_state["detail_query"] = st.session_state["detail_pick"]
+
+    with st.expander("📋 從清單快速選擇"):
+        st.selectbox("清單股票", stock_names, label_visibility="collapsed", key="detail_pick")
+        st.button("帶入上面欄位", key="detail_pick_btn", on_click=_apply_pick, use_container_width=True)
+
+    query = st.session_state["detail_query"].strip()
+    if query in STOCK_NAME_MAP:
+        stock_id, market = STOCK_NAME_MAP[query]
+        label = query
     else:
-        choice = display_to_name[choice_display]
-        stock_id, market = STOCK_NAME_MAP[choice]
-        label = choice
+        stock_id = query
+        label = query
+        market = st.radio("市場（清單外的代碼才需要選）", ["TW", "INDEX", "US"], horizontal=True,
+                           help="TW=台股個股/ETF，INDEX=大盤指數，US=美股")
 
     timeframe = st.radio("週期", ["日", "60", "5"], horizontal=True,
                           format_func=lambda x: {"日": "日線", "60": "60分線", "5": "5分線"}[x])

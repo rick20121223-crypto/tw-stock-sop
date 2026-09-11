@@ -46,13 +46,14 @@ with st.sidebar:
             )
 
     stock_names = list(STOCK_NAME_MAP.keys())
-    # 選項顯示「名稱（代碼）」，這樣下拉選單的搜尋框打代碼也找得到
-    # （之前只顯示中文名稱，打代碼永遠搜尋不到，不是查不到資料，是
-    # 搜尋框根本不吃代碼）。
-    display_to_name = {f"{n}（{STOCK_NAME_MAP[n][0]}）": n for n in stock_names}
-    display_options = list(display_to_name.keys())
 
-    # 從首頁總覽表點「查看」帶過來的股票：預先填好選項，並自動執行一次。
+    # 預設值：第一次載入這個 widget 還沒有 key 時才設，之後都由使用者
+    # 輸入或「帶入上面欄位」按鈕決定，不能跟 text_input 的 value= 參數
+    # 同時使用（兩邊都給值，Streamlit 會出警告）。
+    if "mtf_query" not in st.session_state:
+        st.session_state["mtf_query"] = "2330"
+
+    # 從首頁總覽表點「查看」帶過來的股票：直接設定輸入框的值。
     auto_run = False
     prefill = st.session_state.pop("prefill_stock", None)
     if prefill:
@@ -61,28 +62,39 @@ with st.sidebar:
              if c == prefill["stock_id"] and m == prefill["market"]),
             None,
         )
-        st.session_state["mtf_custom_code"] = ""
-        if match_name:
-            st.session_state["mtf_choice"] = f"{match_name}（{prefill['stock_id']}）"
-        else:
-            st.session_state["mtf_custom_code"] = prefill["stock_id"]
+        st.session_state["mtf_query"] = match_name or prefill["stock_id"]
+        if not match_name:
             st.session_state["mtf_market"] = prefill["market"]
         auto_run = True
 
-    choice_display = st.selectbox("從清單選擇（可用代碼或名稱搜尋）", display_options, key="mtf_choice")
-    custom_code = st.text_input(
-        "或直接輸入任意股票代碼（清單外的股票用這裡，留空則用上面選的）",
-        value="", key="mtf_custom_code",
+    # 只有「一個」輸入框：打清單內的中文名稱、或任意股票代碼都可以，
+    # 不用先猜要用哪一格（之前分成「清單搜尋」+「自訂代碼」兩格，
+    # 使用者常常在只搜清單的那格打代碼、看到 No results 就以為查不到）。
+    query = st.text_input(
+        "股票代碼或名稱（清單內用中文名，清單外直接打代碼，例如 3481）",
+        key="mtf_query",
     )
 
-    if custom_code.strip():
-        stock_id = custom_code.strip()
-        label = stock_id
-        market = st.radio("市場", ["TW", "INDEX", "US"], horizontal=True, key="mtf_market")
+    def _apply_pick():
+        # 一定要用 on_click callback 改 session_state，不能在按鈕的
+        # if 區塊裡直接改：widget 一旦在這次 script run 建立過，
+        # 同一輪就不能再改它的 session_state，會丟例外。callback 是在
+        # 下一輪 rerun「開始前」執行，這時候還沒建立 widget，才能改。
+        st.session_state["mtf_query"] = st.session_state["mtf_pick"]
+
+    with st.expander("📋 從清單快速選擇"):
+        st.selectbox("清單股票", stock_names, label_visibility="collapsed", key="mtf_pick")
+        st.button("帶入上面欄位", key="mtf_pick_btn", on_click=_apply_pick, use_container_width=True)
+
+    query = st.session_state["mtf_query"].strip()
+    if query in STOCK_NAME_MAP:
+        stock_id, market = STOCK_NAME_MAP[query]
+        label = query
     else:
-        choice = display_to_name[choice_display]
-        stock_id, market = STOCK_NAME_MAP[choice]
-        label = choice
+        stock_id = query
+        label = query
+        market = st.radio("市場（清單外的代碼才需要選）", ["TW", "INDEX", "US"],
+                           horizontal=True, key="mtf_market")
 
     years_back = st.slider("回溯年數（週線需要夠長的歷史才能算出35週生死線）", 1, 5, 2)
 
