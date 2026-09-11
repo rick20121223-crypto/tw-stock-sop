@@ -73,16 +73,18 @@ with st.sidebar:
             fugle_api_key = st.text_input("Fugle 行情 API Key（60分/5分線用）", type="password")
 
     stock_names = list(STOCK_NAME_MAP.keys())
-    # 「自訂代碼」放第一個方便找（清單有45檔，放最後要滑很久），
-    # 但預設還是選第一檔股票（index=1），不是一打開就跳自訂代碼。
-    choice = st.selectbox("選擇股票", ["自訂代碼"] + stock_names, index=1)
+    # 選項顯示「名稱（代碼）」，這樣下拉選單的搜尋框打代碼也找得到。
+    display_to_name = {f"{n}（{STOCK_NAME_MAP[n][0]}）": n for n in stock_names}
+    choice_display = st.selectbox("從清單選擇（可用代碼或名稱搜尋）", list(display_to_name.keys()))
+    custom_code = st.text_input("或直接輸入任意股票代碼（清單外的股票用這裡，留空則用上面選的）", value="")
 
-    if choice == "自訂代碼":
-        custom_code = st.text_input("輸入股票代碼", value="2330")
+    if custom_code.strip():
+        stock_id = custom_code.strip()
+        label = stock_id
         market = st.radio("市場", ["TW", "INDEX", "US"], horizontal=True,
                            help="TW=台股個股/ETF，INDEX=大盤指數，US=美股")
-        stock_id, label = custom_code, custom_code
     else:
+        choice = display_to_name[choice_display]
         stock_id, market = STOCK_NAME_MAP[choice]
         label = choice
 

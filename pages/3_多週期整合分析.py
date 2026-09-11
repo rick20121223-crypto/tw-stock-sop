@@ -46,7 +46,11 @@ with st.sidebar:
             )
 
     stock_names = list(STOCK_NAME_MAP.keys())
-    options = ["自訂代碼"] + stock_names
+    # 選項顯示「名稱（代碼）」，這樣下拉選單的搜尋框打代碼也找得到
+    # （之前只顯示中文名稱，打代碼永遠搜尋不到，不是查不到資料，是
+    # 搜尋框根本不吃代碼）。
+    display_to_name = {f"{n}（{STOCK_NAME_MAP[n][0]}）": n for n in stock_names}
+    display_options = list(display_to_name.keys())
 
     # 從首頁總覽表點「查看」帶過來的股票：預先填好選項，並自動執行一次。
     auto_run = False
@@ -57,22 +61,26 @@ with st.sidebar:
              if c == prefill["stock_id"] and m == prefill["market"]),
             None,
         )
+        st.session_state["mtf_custom_code"] = ""
         if match_name:
-            st.session_state["mtf_choice"] = match_name
+            st.session_state["mtf_choice"] = f"{match_name}（{prefill['stock_id']}）"
         else:
-            st.session_state["mtf_choice"] = "自訂代碼"
             st.session_state["mtf_custom_code"] = prefill["stock_id"]
             st.session_state["mtf_market"] = prefill["market"]
         auto_run = True
 
-    # 「自訂代碼」放第一個方便找（清單有45檔，放最後要滑很久），
-    # 但預設還是選第一檔股票（index=1），不是一打開就跳自訂代碼。
-    choice = st.selectbox("選擇股票", options, index=1, key="mtf_choice")
-    if choice == "自訂代碼":
-        custom_code = st.text_input("輸入股票代碼", value="2330", key="mtf_custom_code")
+    choice_display = st.selectbox("從清單選擇（可用代碼或名稱搜尋）", display_options, key="mtf_choice")
+    custom_code = st.text_input(
+        "或直接輸入任意股票代碼（清單外的股票用這裡，留空則用上面選的）",
+        value="", key="mtf_custom_code",
+    )
+
+    if custom_code.strip():
+        stock_id = custom_code.strip()
+        label = stock_id
         market = st.radio("市場", ["TW", "INDEX", "US"], horizontal=True, key="mtf_market")
-        stock_id, label = custom_code, custom_code
     else:
+        choice = display_to_name[choice_display]
         stock_id, market = STOCK_NAME_MAP[choice]
         label = choice
 
