@@ -73,7 +73,9 @@ with st.sidebar:
             fugle_api_key = st.text_input("Fugle 行情 API Key（60分/5分線用）", type="password")
 
     stock_names = list(STOCK_NAME_MAP.keys())
-    choice = st.selectbox("選擇股票", stock_names + ["自訂代碼"])
+    # 「自訂代碼」放第一個方便找（清單有45檔，放最後要滑很久），
+    # 但預設還是選第一檔股票（index=1），不是一打開就跳自訂代碼。
+    choice = st.selectbox("選擇股票", ["自訂代碼"] + stock_names, index=1)
 
     if choice == "自訂代碼":
         custom_code = st.text_input("輸入股票代碼", value="2330")

@@ -46,7 +46,7 @@ with st.sidebar:
             )
 
     stock_names = list(STOCK_NAME_MAP.keys())
-    options = stock_names + ["自訂代碼"]
+    options = ["自訂代碼"] + stock_names
 
     # 從首頁總覽表點「查看」帶過來的股票：預先填好選項，並自動執行一次。
     auto_run = False
@@ -65,7 +65,9 @@ with st.sidebar:
             st.session_state["mtf_market"] = prefill["market"]
         auto_run = True
 
-    choice = st.selectbox("選擇股票", options, key="mtf_choice")
+    # 「自訂代碼」放第一個方便找（清單有45檔，放最後要滑很久），
+    # 但預設還是選第一檔股票（index=1），不是一打開就跳自訂代碼。
+    choice = st.selectbox("選擇股票", options, index=1, key="mtf_choice")
     if choice == "自訂代碼":
         custom_code = st.text_input("輸入股票代碼", value="2330", key="mtf_custom_code")
         market = st.radio("市場", ["TW", "INDEX", "US"], horizontal=True, key="mtf_market")
