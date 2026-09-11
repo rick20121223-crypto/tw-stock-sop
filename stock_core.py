@@ -3,11 +3,32 @@
 被 streamlit_app.py 匯入使用，本身不會直接執行。
 """
 
+import threading
+import time
+
 import numpy as np
 import requests
 import pandas as pd
 
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
+
+# Fugle 的頻率限制不是看單一執行緒送幾次，是看「所有執行緒加總」在同一
+# 段時間內送了幾次——就算把 ThreadPoolExecutor 的並行數調低、加了429
+# 退避重試，只要好幾個執行緒同時起跑，加總的瞬間速率還是會超標。這裡用
+# 一個全域鎖 + 最後呼叫時間，強制「不管幾個執行緒，兩次 Fugle 請求之間
+# 至少間隔 0.5 秒」，才是真正卡住整體速率的地方。
+_fugle_rate_lock = threading.Lock()
+_fugle_last_call_at = [0.0]
+_FUGLE_MIN_INTERVAL_SEC = 0.5
+
+
+def _fugle_throttle() -> None:
+    with _fugle_rate_lock:
+        now = time.monotonic()
+        wait = _fugle_last_call_at[0] + _FUGLE_MIN_INTERVAL_SEC - now
+        if wait > 0:
+            time.sleep(wait)
+        _fugle_last_call_at[0] = time.monotonic()
 
 
 # ------------------------------------------------------------------
@@ -188,7 +209,6 @@ def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str,
     資料量不夠算 60分的MA240 / 5分的MA300，所以改用 historical.candles
     帶 from/to 日期區間，才能抓到跨天的歷史分K。
     """
-    import time
     from datetime import date, timedelta
 
     from fugle_marketdata import RestClient
@@ -199,13 +219,17 @@ def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str,
     client = RestClient(api_key=fugle_api_key)
     today = date.today()
 
-    # Fugle 對短時間內大量請求會回 429 Rate limit（一次查整份清單、平行
-    # 打好幾檔，很容易撞到），跟 FinMind 的逾時不一樣，要用退避重試，
-    # 不能直接當成查詢失敗。
+    # Fugle 對短時間內大量請求會回 429 Rate limit，而且是看「所有執行緒
+    # 加總」的速率，不是單一執行緒送幾次——所以每次真正發送請求前都要
+    # 先過 _fugle_throttle() 這個全域節流閥，才能真的把整體速率壓下來；
+    # 光靠降低 ThreadPoolExecutor 的並行數或失敗後重試，還是會一開始就
+    # 好幾個執行緒同時衝出去，一樣撞429。退避時間也拉長一點（2/4/8/16秒），
+    # 給 Fugle 的流量窗口真正重置的時間。
     max_attempts = 4
     resp = None
     last_exc = None
     for attempt in range(max_attempts):
+        _fugle_throttle()
         try:
             resp = client.stock.historical.candles(
                 symbol=symbol,
@@ -218,7 +242,7 @@ def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str,
             if "429" not in str(exc) and "Rate limit" not in str(exc):
                 raise
             if attempt < max_attempts - 1:
-                time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s, 16s
     if resp is None:
         raise last_exc
 
