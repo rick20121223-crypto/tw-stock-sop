@@ -13,6 +13,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import streamlit as st
 
+from chart_builder import build_price_chart
+from holding_shares import align_to_trading_days, compute_consecutive_signals, fetch_major_holder_trend
 from multi_timeframe_check import full_check
 from stock_core import STOCK_NAME_MAP
 
@@ -98,6 +100,13 @@ with st.sidebar:
 
     years_back = st.slider("回溯年數（週線需要夠長的歷史才能算出35週生死線）", 1, 5, 2)
 
+    with st.expander("📊 股權分散表（大股東持股）設定"):
+        holding_n = st.slider(
+            "連續同方向週數門檻 N", min_value=2, max_value=10, value=3, step=1,
+            help="大股東(>400張)持股比例連續N週同方向變化才在日線圖標訊號。"
+                 "需要 FinMind Backer/Sponsor 等級的 Token 才能查得到資料。",
+        )
+
     run_button = st.button("🔍 執行多週期整合分析", type="primary", use_container_width=True)
 
 
@@ -124,7 +133,8 @@ start_date = str(date(date.today().year - years_back, date.today().month, date.t
 
 with st.spinner(f"正在分析 {label}（{stock_id}）的日/週/60分/5分資料..."):
     try:
-        result = full_check(stock_id, market, api_token, fugle_api_key or "", start_date)
+        result = full_check(stock_id, market, api_token, fugle_api_key or "", start_date,
+                             include_dataframes=True)
     except Exception as exc:  # noqa: BLE001
         st.error(f"分析失敗：{exc}")
         st.stop()
@@ -168,3 +178,52 @@ missing_tfs = [tf for tf in tf_order if tf not in detail]
 if missing_tfs:
     reason = "沒有 Fugle API Key 或非台股個股/ETF" if any(t in ("60分", "5分") for t in missing_tfs) else "資料不足"
     st.caption(f"缺少週期：{'、'.join(missing_tfs)}（{reason}），本次判讀僅依現有週期進行。")
+
+# ------------------------------------------------------------------
+# K線＋均線走勢圖：跟文字結論放在同一頁，不用再切去「個股詳細分析」頁
+# （那頁目前為了精簡導覽列而隱藏，見 pages/_4_個股詳細分析.py 開頭說明）。
+# 日線圖另外疊加「股權分散表（大股東持股）」連續同向訊號標記。
+# ------------------------------------------------------------------
+dataframes = result.get("原始資料", {})
+if dataframes:
+    st.divider()
+    st.markdown("### 價格走勢＋均線")
+
+    # 股權分散表只對日線有意義（TDCC週頻資料），且需要FinMind Backer/
+    # Sponsor付費等級，免費會員查詢會被FinMind擋掉，這裡接住錯誤顯示
+    # 友善提示，不讓整頁掛掉。
+    holding_signal_rows = pd.DataFrame()
+    holding_error = None
+    if "日" in dataframes and market == "TW":
+        try:
+            with st.spinner("查詢股權分散表（大股東持股）..."):
+                holding_trend = fetch_major_holder_trend(stock_id, start_date, str(date.today()), api_token)
+            if not holding_trend.empty:
+                holding_signals = compute_consecutive_signals(holding_trend, n=holding_n)
+                holding_signal_rows = align_to_trading_days(holding_signals, dataframes["日"])
+        except Exception as exc:  # noqa: BLE001
+            holding_error = str(exc)
+
+    for tf in present_tfs:
+        if tf not in dataframes:
+            continue
+        st.markdown(f"**{tf}線**")
+        marks = holding_signal_rows if tf == "日" else None
+        fig = build_price_chart(dataframes[tf], tf, holding_signals=marks)
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_{tf}")
+
+    if market == "TW" and "日" in dataframes:
+        if holding_error:
+            st.warning(f"股權分散表（大股東持股）查詢失敗：{holding_error}\n\n"
+                       "這個資料集需要 FinMind Backer/Sponsor 付費等級的 Token 才能查詢，"
+                       "免費／一般註冊會員會查不到，不影響其他技術指標的判讀。")
+        elif holding_signal_rows.empty:
+            st.caption("🔸 股權分散表（大股東持股）：查詢區間內沒有資料，或還沒有出現連續同向訊號。")
+        else:
+            marked = holding_signal_rows[holding_signal_rows["signal"] != ""]
+            n_up = (marked["signal"] == "籌碼連續集中").sum()
+            n_down = (marked["signal"] == "籌碼連續分散").sum()
+            st.caption(
+                f"🔺 大股東(>400張)持股比例連續 {holding_n} 週同向：籌碼連續集中 {n_up} 次、"
+                f"籌碼連續分散 {n_down} 次（標記在日線圖上，滑鼠移過去可看詳細數值）。"
+            )
