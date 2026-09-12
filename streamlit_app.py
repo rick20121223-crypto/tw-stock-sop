@@ -28,9 +28,10 @@ from datetime import date
 
 import streamlit as st
 
+import institutional_ranking as ir
 from multi_timeframe_check import full_check
 from sop_decision import classify_final
-from stock_core import STOCK_NAME_MAP
+from stock_core import unique_watchlist
 
 st.set_page_config(page_title="長線留倉", layout="wide", page_icon="📅")
 
@@ -77,18 +78,6 @@ if not api_token:
 
 if refresh:
     st.cache_data.clear()
-
-
-def unique_watchlist() -> list:
-    seen = set()
-    result = []
-    for name, (code, market) in STOCK_NAME_MAP.items():
-        key = (code, market)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append((name, code, market))
-    return result
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -173,3 +162,63 @@ if errors:
 
 st.caption("👉 想一次看整份清單的短線進場訊號，請到左側選單「短線進場」頁面；"
            "想查清單外的股票，請到「多週期整合分析」頁面選「自訂代碼」。")
+
+# ------------------------------------------------------------------
+# 🔄 本週法人排行：獨立區塊，跟上面的固定清單分開顯示。每週一由排程自動
+# 算出「上週三大法人買賣超前十大（買超+賣超）」覆寫這份名單，這裡只是
+# 讀取現有結果來顯示，不會在網頁瀏覽時重新計算排行本身。
+# ------------------------------------------------------------------
+st.divider()
+weekly_picks = ir.load_weekly_picks()
+
+if not weekly_picks:
+    st.caption("🔄 本週法人排行：尚未產生（要等排程第一次執行「每週一算排行」之後才會有資料）。")
+else:
+    st.subheader("🔄 本週法人排行（三大法人買賣超前十大，跟固定清單分開）")
+    st.caption(
+        f"資料範圍：{weekly_picks['week_start']} ~ {weekly_picks['week_end']}"
+        "（上市+上櫃三大法人合計淨額，已排除ETF與固定清單，下週一會自動換成新一週的排行）。"
+    )
+    if weekly_picks.get("tpex_days_available", 0) == 0:
+        st.caption("⚠️ 上櫃(TPEx)法人資料還在累積中（需要每天存檔滿一週），這次排行僅計算上市(TWSE)。")
+
+    rotating_list = ir.rotating_watchlist()  # [(name, code, market, side)]
+    side_map = {code: side for _, code, _market, side in rotating_list}
+
+    with st.spinner("正在分析本週法人排行股票的週+日整合結論..."):
+        rotating_rows, rotating_errors = [], []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [
+                executor.submit(analyze_stock, name, code, market, api_token, start_date)
+                for name, code, market, _side in rotating_list
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                (rotating_rows if result["狀態"] == "ok" else rotating_errors).append(result)
+
+    if rotating_rows:
+        for r in rotating_rows:
+            r["法人方向"] = side_map.get(r["代碼"], "—")
+            r["分類"] = classify_final(r["最終建議"])
+        rotating_rows.sort(key=lambda r: (0 if r["法人方向"] == "買超" else 1, BUCKET_ORDER[r["分類"]]))
+
+        header2 = st.columns([2, 1, 1, 3, 1.3, 2, 2])
+        for col, text in zip(header2, ["名稱", "代碼", "收盤", "最終建議（週+日整合）", "法人方向", "週線", "日線"]):
+            col.markdown(f"**{text}**")
+        for r in rotating_rows:
+            c = st.columns([2, 1, 1, 3, 1.3, 2, 2])
+            c[0].write(r["名稱"])
+            c[1].write(r["代碼"])
+            c[2].write(f"{r['收盤']:.2f}" if r["收盤"] is not None else "—")
+            color = BUCKET_COLOR[r["分類"]]
+            emoji = BUCKET_EMOJI[r["分類"]]
+            c[3].markdown(f"<span style='color:{color}; font-weight:600'>{emoji} {r['最終建議']}</span>",
+                           unsafe_allow_html=True)
+            c[4].write(f"{'🟥' if r['法人方向']=='買超' else '🟩'} {r['法人方向']}")
+            c[5].write(r["週線"])
+            c[6].write(r["日線"])
+
+    if rotating_errors:
+        with st.expander(f"⚠️ {len(rotating_errors)} 檔本週法人排行股票資料取得失敗"):
+            for e in rotating_errors:
+                st.write(f"- {e['名稱']}（{e['代碼']}）：{e.get('訊息', '未知錯誤')}")

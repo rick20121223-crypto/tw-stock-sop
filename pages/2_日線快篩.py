@@ -13,8 +13,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import streamlit as st
 
+import institutional_ranking as ir
 from sop_decision import evaluate_timeframe
-from stock_core import STOCK_NAME_MAP, get_stock_data, run_all_indicators
+from stock_core import get_stock_data, run_all_indicators, unique_watchlist
 
 st.set_page_config(page_title="日線快篩", layout="wide", page_icon="⚡")
 
@@ -69,21 +70,6 @@ if not api_token:
 
 if refresh:
     st.cache_data.clear()
-
-
-# ------------------------------------------------------------------
-# 去重股票清單（0050／元大台灣50 是同一檔，只取第一個名稱）
-# ------------------------------------------------------------------
-def unique_watchlist() -> list:
-    seen = set()
-    result = []
-    for name, (code, market) in STOCK_NAME_MAP.items():
-        key = (code, market)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append((name, code, market))
-    return result
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -160,14 +146,15 @@ BUCKET_STYLE = {
 }
 
 
-def _stock_card(row) -> str:
+def _stock_card(row, badge: str = "") -> str:
     style = BUCKET_STYLE[row["結論"]]
     price = f"{row['收盤']:.2f}" if pd.notna(row["收盤"]) else "—"
     reason = row["理由"] if row["理由"] else ""
+    badge_html = f'<span style="font-size:11px; color:#999;">{badge}</span> ' if badge else ""
     return f"""\
 <div style="border-left:4px solid {style['color']}; background:{style['bg']};
             border-radius:6px; padding:10px 12px; height:100%;">
-  <div style="font-weight:600; font-size:13px; color:#222;">{row['名稱']}（{row['代碼']}）</div>
+  <div style="font-weight:600; font-size:13px; color:#222;">{badge_html}{row['名稱']}（{row['代碼']}）</div>
   <div style="font-size:19px; font-weight:700; color:{style['color']}; margin:3px 0;">
     {row['訊號']}
   </div>
@@ -190,3 +177,52 @@ if errors:
             st.write(f"- {e['名稱']}（{e['代碼']}）：{e.get('訊息', '未知錯誤')}")
 
 st.caption("👉 想看某檔股票的四關價／K線／MACD／OBV 詳細圖表，請用左側選單切換到「個股詳細分析」頁面。")
+
+# ------------------------------------------------------------------
+# 🔄 本週法人排行：獨立區塊，跟上面的固定清單分開顯示。每週一由排程自動
+# 算出「上週三大法人買賣超前十大（買超+賣超）」覆寫這份名單。
+# ------------------------------------------------------------------
+st.divider()
+weekly_picks = ir.load_weekly_picks()
+
+if not weekly_picks:
+    st.caption("🔄 本週法人排行：尚未產生（要等排程第一次執行「每週一算排行」之後才會有資料）。")
+else:
+    st.subheader("🔄 本週法人排行（三大法人買賣超前十大，跟固定清單分開）")
+    st.caption(
+        f"資料範圍：{weekly_picks['week_start']} ~ {weekly_picks['week_end']}"
+        "（上市+上櫃三大法人合計淨額，已排除ETF與固定清單，下週一會自動換成新一週的排行）。"
+    )
+    if weekly_picks.get("tpex_days_available", 0) == 0:
+        st.caption("⚠️ 上櫃(TPEx)法人資料還在累積中（需要每天存檔滿一週），這次排行僅計算上市(TWSE)。")
+
+    rotating_list = ir.rotating_watchlist()  # [(name, code, market, side)]
+    side_map = {code: side for _, code, _market, side in rotating_list}
+
+    rotating_rows, rotating_errors = [], []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(analyze_one, name, code, market, api_token, lookback_days)
+            for name, code, market, _side in rotating_list
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            (rotating_rows if result["狀態"] == "ok" else rotating_errors).append(result)
+
+    if rotating_rows:
+        for row in rotating_rows:
+            row["訊號"] = CONCLUSION_EMOJI[row["結論"]] + " " + row["結論"]
+        rotating_cards_html = "".join(
+            _stock_card(row, badge=f"🔄 法人{side_map.get(row['代碼'], '')}")
+            for row in rotating_rows
+        )
+        st.markdown(
+            f'<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); '
+            f'gap:10px;">{rotating_cards_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+    if rotating_errors:
+        with st.expander(f"⚠️ {len(rotating_errors)} 檔本週法人排行股票資料取得失敗"):
+            for e in rotating_errors:
+                st.write(f"- {e['名稱']}（{e['代碼']}）：{e.get('訊息', '未知錯誤')}")

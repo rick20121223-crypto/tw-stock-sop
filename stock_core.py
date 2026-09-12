@@ -128,6 +128,23 @@ STOCK_NAME_MAP = {
 
 
 # ------------------------------------------------------------------
+# 去重股票清單：streamlit_app.py / notify_email.py / pages/*.py 原本都
+# 各自複製一份同樣的邏輯（0050／元大台灣50是同一檔，只取第一個名稱），
+# 抽成共用函式避免以後改一次要改好幾個地方。
+# ------------------------------------------------------------------
+def unique_watchlist(name_map: dict = None) -> list:
+    name_map = name_map if name_map is not None else STOCK_NAME_MAP
+    seen, result = set(), []
+    for name, (code, market) in name_map.items():
+        key = (code, market)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((name, code, market))
+    return result
+
+
+# ------------------------------------------------------------------
 # 1. 抓取日線資料（FinMind）
 # ------------------------------------------------------------------
 def fetch_finmind(dataset: str, data_id: str, start_date: str, end_date: str, token: str) -> pd.DataFrame:

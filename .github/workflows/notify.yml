@@ -35,10 +35,13 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python notify_email.py
 
-      - name: 把最新的訊號狀態與每日紀錄 commit 回 repo
+      - name: 把最新的訊號狀態、每日紀錄與上櫃法人快照 commit 回 repo
         run: |
           git config user.name "sop-notify-bot"
           git config user.email "actions@github.com"
-          git add data/last_signals.json data/signal_log.csv
-          git diff --cached --quiet || git commit -m "更新 SOP 訊號狀態與每日紀錄（自動）"
+          # mkdir -p 先確保資料夾存在，避免上櫃法人快照抓取失敗時
+          # （資料夾還沒被建立）git add 對不存在的路徑報錯、擋掉整個commit
+          mkdir -p data/tpex_3insti_daily
+          git add data/last_signals.json data/signal_log.csv data/tpex_3insti_daily/
+          git diff --cached --quiet || git commit -m "更新 SOP 訊號狀態、每日紀錄與上櫃法人快照（自動）"
           git push

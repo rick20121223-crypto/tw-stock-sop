@@ -26,9 +26,10 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import institutional_ranking as ir
 from multi_timeframe_check import full_check
 from sop_decision import classify_final, combine_timeframes, evaluate_timeframe
-from stock_core import STOCK_NAME_MAP, get_intraday_data, run_all_indicators
+from stock_core import get_intraday_data, run_all_indicators, unique_watchlist
 
 STATE_FILE = Path(__file__).parent / "data" / "last_signals.json"
 SIGNAL_LOG_FILE = Path(__file__).parent / "data" / "signal_log.csv"
@@ -45,14 +46,20 @@ BUCKET_STYLE = {
 HORIZON_LABEL = {"長期": "📅 長線留倉", "短期": "⚡ 短線進場"}
 
 
-def unique_watchlist():
-    seen, result = set(), []
-    for name, (code, market) in STOCK_NAME_MAP.items():
-        key = (code, market)
-        if key in seen:
+def full_watchlist():
+    """
+    固定清單 + 本週法人排行輪替名單，一起餵給每天的判讀。回傳
+    [(name, code, market, source), ...]，source 是 "固定" 或
+    "法人排行(買超)"/"法人排行(賣超)"，用來在通知信裡標註來源，
+    不會混進 STOCK_NAME_MAP 本身。
+    """
+    result = [(name, code, market, "固定") for name, code, market in unique_watchlist()]
+    seen_codes = {code for _, code, _market, _source in result}
+    for name, code, market, side in ir.rotating_watchlist():
+        if code in seen_codes:  # 理論上排行時已經排除固定清單，這裡是防呆
             continue
-        seen.add(key)
-        result.append((name, code, market))
+        result.append((name, code, market, f"法人排行({side})"))
+        seen_codes.add(code)
     return result
 
 
@@ -146,8 +153,9 @@ def build_first_run_email(today: str, new_state: dict) -> tuple:
     plain_lines = [f"台股 SOP 通知已啟用（{today}）", "", "今天的起始分類（長期／短期）：", ""]
     for v in rows:
         short = v.get("短期") or "—"
-        plain_lines.append(f"・{v['名稱']}（{v['代碼']}）：長期={v['長期']}／短期={short}")
-    plain_lines += ["", "之後只有分類「變化」時才會再寄信通知你。"]
+        badge = _source_badge(v.get("來源"))
+        plain_lines.append(f"・{badge}{v['名稱']}（{v['代碼']}）：長期={v['長期']}／短期={short}")
+    plain_lines += ["", "之後只有分類「變化」時才會再寄信通知你。", "🔄 標記代表這是本週法人買賣超排行自動加入的股票。"]
     plain = "\n".join(plain_lines)
 
     cards = ""
@@ -155,9 +163,10 @@ def build_first_run_email(today: str, new_state: dict) -> tuple:
         style = BUCKET_STYLE[v["長期"]]
         short = v.get("短期")
         short_text = f'　短期：<b style="color:{BUCKET_STYLE[short]["color"]}">{short}</b>' if short else ""
+        badge = _source_badge(v.get("來源"))
         cards += _card_html(
             style["icon"], style["color"], style["bg"],
-            f"{v['名稱']}（{v['代碼']}）",
+            f"{badge}{v['名稱']}（{v['代碼']}）",
             f'長期：<span style="color:{style["color"]}; font-weight:600;">{v["長期"]}</span>{short_text}',
         )
     html_body = cards + (
@@ -168,11 +177,17 @@ def build_first_run_email(today: str, new_state: dict) -> tuple:
     return plain, html
 
 
+def _source_badge(source: str) -> str:
+    return "🔄 " if source and source != "固定" else ""
+
+
 def _changes_to_plain(changes: list) -> list:
     lines = []
     for c in changes:
         style = BUCKET_STYLE[c["new"]]
-        lines.append(f"{style['icon']} {c['name']}（{c['code']}）：{c['prev']} → {c['new']}")
+        badge = _source_badge(c.get("source"))
+        suffix = f"　[{c['source']}]" if badge else ""
+        lines.append(f"{style['icon']} {badge}{c['name']}（{c['code']}）：{c['prev']} → {c['new']}{suffix}")
     return lines
 
 
@@ -180,10 +195,16 @@ def _changes_to_html(changes: list) -> str:
     cards = ""
     for c in changes:
         style = BUCKET_STYLE[c["new"]]
+        badge = _source_badge(c.get("source"))
+        source_html = (
+            f'<div style="color:#999; font-size:11px; margin-top:2px;">🔄 {c["source"]}</div>'
+            if badge else ""
+        )
         detail = (
             f'<span style="color:#999;">{c["prev"]}</span>'
             f' <span style="color:#bbb;">→</span> '
             f'<span style="color:{style["color"]}; font-weight:700; font-size:15px;">{c["new"]}</span>'
+            f'{source_html}'
         )
         cards += _card_html(style["icon"], style["color"], style["bg"],
                              f"{c['name']}（{c['code']}）", detail)
@@ -260,6 +281,15 @@ def main() -> None:
     if not fugle_api_key:
         print("⚠️ 未設定 FUGLE_API_KEY，本次只會判讀長期（週+日），短期（60分/5分）略過。")
 
+    # 每天執行時順便存一份上櫃法人快照（TPEx開放資料只有「最新一天」，
+    # 靠每天存檔累積，才能在每週一算出「本週法人買賣超排行」，見
+    # institutional_ranking.py）。存檔失敗不影響本次通知主流程。
+    try:
+        archived = ir.archive_tpex_snapshot(date.today())
+        print(f"上櫃法人快照已存檔：{archived}" if archived else "上櫃法人快照抓取失敗或無資料，略過本次存檔")
+    except Exception as exc:  # noqa: BLE001
+        print(f"上櫃法人快照存檔發生例外（不影響本次通知）：{exc}")
+
     last_state = load_last_state()
     is_first_run = not last_state
 
@@ -268,19 +298,19 @@ def main() -> None:
     errors = []
     log_rows = []
 
-    def _check_one(name, code, market):
+    def _check_one(name, code, market, source):
         long_bucket, long_close, long_err = _check_long(code, market, api_token)
         short_bucket, short_close, short_err = _check_short(code, market, fugle_api_key)
-        return (name, code, market, long_bucket, long_close, long_err,
+        return (name, code, market, source, long_bucket, long_close, long_err,
                 short_bucket, short_close, short_err)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
-            executor.submit(_check_one, name, code, market)
-            for name, code, market in unique_watchlist()
+            executor.submit(_check_one, name, code, market, source)
+            for name, code, market, source in full_watchlist()
         ]
         for future in concurrent.futures.as_completed(futures):
-            (name, code, market, long_bucket, long_close, long_err,
+            (name, code, market, source, long_bucket, long_close, long_err,
              short_bucket, short_close, short_err) = future.result()
 
             if long_err is not None:
@@ -291,7 +321,8 @@ def main() -> None:
                 continue  # 長期是核心判讀，抓不到就整檔略過
 
             key = f"{code}_{market}"
-            new_state[key] = {"名稱": name, "代碼": code, "長期": long_bucket, "短期": short_bucket}
+            new_state[key] = {"名稱": name, "代碼": code, "長期": long_bucket,
+                               "短期": short_bucket, "來源": source}
 
             log_rows.append({"name": name, "code": code, "market": market,
                               "horizon": "長期", "close": long_close, "signal": long_bucket})
@@ -302,10 +333,10 @@ def main() -> None:
             prev = last_state.get(key)
             if prev:
                 if prev.get("長期") and prev["長期"] != long_bucket:
-                    long_changes.append({"name": name, "code": code,
+                    long_changes.append({"name": name, "code": code, "source": source,
                                           "prev": prev["長期"], "new": long_bucket})
                 if short_bucket is not None and prev.get("短期") and prev["短期"] != short_bucket:
-                    short_changes.append({"name": name, "code": code,
+                    short_changes.append({"name": name, "code": code, "source": source,
                                            "prev": prev["短期"], "new": short_bucket})
 
     save_state(new_state)
