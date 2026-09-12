@@ -18,6 +18,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+from holding_shares import (
+    align_to_trading_days,
+    compute_consecutive_signals,
+    fetch_major_holder_trend,
+)
 from sop_decision import evaluate_timeframe
 
 from stock_core import (
@@ -111,6 +116,14 @@ with st.sidebar:
 
     timeframe = st.radio("週期", ["日", "60", "5"], horizontal=True,
                           format_func=lambda x: {"日": "日線", "60": "60分線", "5": "5分線"}[x])
+
+    with st.expander("📊 股權分散表（大股東持股）設定"):
+        holding_n = st.slider(
+            "連續同方向週數門檻 N", min_value=2, max_value=10, value=3, step=1,
+            help="大股東(>400張)持股比例連續N週同方向變化才在K線圖標訊號。"
+                 "只有台股個股/ETF的「日線」查詢才會顯示這個功能，需要 "
+                 "FinMind Backer/Sponsor 等級的 Token 才能查得到資料。",
+        )
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -216,9 +229,80 @@ for ma_col, color in ma_colors.items():
             name=label,
             line=dict(color=color, width=1.3),
         ))
+
+# ------------------------------------------------------------------
+# 股權分散表（大股東持股比例）連續同向訊號，標註在K線圖上。只有台股
+# 個股/ETF的日線適用（股權分散表是TDCC週頻資料，跟60分/5分、INDEX/US
+# 沒有對應關係）；資料集需要FinMind Backer/Sponsor等級才能查，免費會員
+# 查詢會被FinMind擋掉，這裡接住錯誤顯示友善提示，不讓整頁掛掉。
+# ------------------------------------------------------------------
+holding_signal_rows = pd.DataFrame()
+holding_error = None
+if timeframe == "日" and market == "TW":
+    try:
+        with st.spinner("查詢股權分散表（大股東持股）..."):
+            holding_trend = fetch_major_holder_trend(stock_id, str(start_date), str(end_date), api_token)
+        if not holding_trend.empty:
+            holding_signals = compute_consecutive_signals(holding_trend, n=holding_n)
+            holding_signal_rows = align_to_trading_days(holding_signals, df)
+    except Exception as exc:  # noqa: BLE001
+        holding_error = str(exc)
+
+if not holding_signal_rows.empty:
+    marked = holding_signal_rows[holding_signal_rows["signal"] != ""]
+    up_pts = marked[marked["signal"] == "籌碼連續集中"]
+    down_pts = marked[marked["signal"] == "籌碼連續分散"]
+
+    def _add_holding_markers(points: pd.DataFrame, color: str, symbol: str,
+                              name: str, above: bool) -> None:
+        if points.empty:
+            return
+        y = points["high"] * 1.02 if above else points["low"] * 0.98
+        fig_price.add_trace(go.Scatter(
+            x=points["trade_date"], y=y,
+            mode="markers+text",
+            marker=dict(symbol=symbol, size=13, color=color, line=dict(width=1, color="white")),
+            text=[name] * len(points),
+            textposition="top center" if above else "bottom center",
+            textfont=dict(color=color, size=11),
+            name=name,
+            customdata=points[["percent", "diff", "people"]].values,
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>大股東(>400張)持股 %{customdata[0]:.2f}%"
+                "<br>較前週 %{customdata[1]:+.2f}%<br>合計人數 %{customdata[2]:,.0f}"
+                f"<extra>{name}</extra>"
+            ),
+        ))
+
+    _add_holding_markers(up_pts, UP_COLOR, "triangle-up", "籌碼連續集中", above=True)
+    _add_holding_markers(down_pts, DOWN_COLOR, "triangle-down", "籌碼連續分散", above=False)
+
 fig_price.update_layout(height=420, xaxis_rangeslider_visible=False,
                          margin=dict(l=10, r=10, t=30, b=10))
 st.plotly_chart(fig_price, use_container_width=True)
+
+if timeframe == "日" and market == "TW":
+    if holding_error:
+        st.warning(f"股權分散表（大股東持股）查詢失敗：{holding_error}\n\n"
+                   "這個資料集需要 FinMind Backer/Sponsor 付費等級的 Token 才能查詢，"
+                   "免費／一般註冊會員會查不到，不影響其他技術指標的判讀。")
+    elif holding_signal_rows.empty:
+        st.caption("🔸 股權分散表（大股東持股）：查詢區間內沒有資料，或還沒有出現連續同向訊號。")
+    else:
+        n_up, n_down = len(up_pts), len(down_pts)
+        st.caption(
+            f"🔺 大股東(>400張)持股比例連續 {holding_n} 週同向：籌碼連續集中 {n_up} 次、"
+            f"籌碼連續分散 {n_down} 次（三角形標記在K線圖上，滑鼠移過去可看詳細數值）。"
+        )
+        with st.expander("查看股權分散表訊號明細"):
+            display_cols = holding_signal_rows[holding_signal_rows["signal"] != ""][
+                ["trade_date", "percent", "diff", "run_length", "signal"]
+            ].rename(columns={"trade_date": "對應交易日", "percent": "大股東持股%",
+                               "diff": "較前週變化", "run_length": "連續週數"})
+            if display_cols.empty:
+                st.caption("尚無訊號")
+            else:
+                st.dataframe(display_cols, use_container_width=True, hide_index=True)
 
 st.caption(f"本週期（{timeframe_label}）依 SOP 使用 {' / '.join(ma_colors.keys())}，"
            f"其中 **{key_ma_col}** 是生死線／多空分水嶺，斜率比價位本身更重要。")
