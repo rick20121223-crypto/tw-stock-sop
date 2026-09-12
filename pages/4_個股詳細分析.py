@@ -21,6 +21,7 @@ from stock_core import (
     TIMEFRAME_MA_PERIODS,
     FAST_MA,
     KEY_MA,
+    HALF_YEAR_MA,
     get_stock_data,
     get_intraday_data,
     run_all_indicators,
@@ -195,13 +196,20 @@ fig_price.add_trace(go.Candlestick(
 tf_key = normalize_timeframe(timeframe)
 ma_periods = TIMEFRAME_MA_PERIODS[tf_key]
 key_ma_col = KEY_MA[tf_key]
+half_year_ma_col = HALF_YEAR_MA.get(tf_key)
 palette = ["#1e88e5", "#fb8c00", "#8e24aa", "#3949ab"]
 ma_colors = {f"MA{p}": palette[i % len(palette)] for i, p in enumerate(ma_periods)}
 for ma_col, color in ma_colors.items():
     if ma_col in df.columns:
+        if ma_col == key_ma_col:
+            label = f"{ma_col}（生死線）"
+        elif ma_col == half_year_ma_col:
+            label = f"{ma_col}（半年線）"
+        else:
+            label = ma_col
         fig_price.add_trace(go.Scatter(
             x=df["date"], y=df[ma_col], mode="lines",
-            name=f"{ma_col}（生死線）" if ma_col == key_ma_col else ma_col,
+            name=label,
             line=dict(color=color, width=1.3),
         ))
 fig_price.update_layout(height=420, xaxis_rangeslider_visible=False,

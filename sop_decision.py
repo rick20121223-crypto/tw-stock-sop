@@ -1,9 +1,15 @@
 """
 但丁老師 SOP 自動判讀模組
 --------------------------------
-依「四關價 → 均線(含斜率) → MACD → OBV/BBI(/MTM)」的位階順序逐層檢查，
-高位階訊號可以否決低位階訊號（尤其：生死線下彎時，任何買訊都要降級；
-真正的頂背離必須「MACD背離 + OBV/BBI量價背離」同步出現才算數）。
+依「四關價 → 均線(含斜率) → MACD → OBV/BBI(/MTM) → 左側平台」的位階順序
+逐層檢查，高位階訊號可以否決低位階訊號（尤其：生死線下彎時，任何買訊都
+要降級；真正的頂背離必須「MACD背離 + OBV/BBI量價背離」同步出現才算數）。
+
+另外還有兩條跨步驟的規則：
+- 乖離過大：股價與快/慢均線同方向乖離都超過門檻，不論多空方向一律嚴禁
+  追高摸底，「買進/加碼」會被降級為「觀望」。
+- 半年線(MA120)第二隻腳未破（僅日線）：大跌測到重要支撐、打出第二隻腳
+  但未破前低的特殊情境，會在但書提示可考慮「帶著鋼盔慢買」分批佈局。
 
 單一週期判讀：evaluate_timeframe()
 跨週期整合（日/週/60分/5分）：combine_timeframes()，採「為日線留倉，
@@ -20,7 +26,14 @@ from typing import Dict, List
 
 import pandas as pd
 
-from stock_core import FAST_MA, KEY_MA, ma_slope, normalize_timeframe
+from stock_core import (
+    DEVIATION_THRESHOLD,
+    FAST_MA,
+    HALF_YEAR_MA,
+    KEY_MA,
+    ma_slope,
+    normalize_timeframe,
+)
 
 
 @dataclass
@@ -226,6 +239,133 @@ def _step5_mtm(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str])
 
 
 # ------------------------------------------------------------------
+# Step 6：左側平台支撐/壓力校正
+# 簡化偵測：抓「左側」（排除最近5根，避免抓到自己）K棒裡的局部高/低點，
+# 取離目前收盤價最近的一組當作左側支撐/壓力參考。
+# - 拉回測到左側支撐未破 + 短線指標（快均線）轉向 → 相對安全買點，加分
+# - 反彈碰到左側壓力區 + 今開無法過昨高（四關價否決）→ 應獲利了結，減分
+# ------------------------------------------------------------------
+def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
+                               fast_slope_up: bool,
+                               reasons: List[str], caveats: List[str]) -> float:
+    exclude_recent = 5
+    pivot_window = 5  # 局部高低點判斷用的前後窗口
+    min_left_bars = 20
+
+    left = df.iloc[:-exclude_recent] if len(df) > exclude_recent else df.iloc[0:0]
+    if len(left) < min_left_bars or pd.isna(latest.get("close")):
+        caveats.append("左側K棒資料不足，Step6左側平台校正略過")
+        return 0.0
+
+    left = left.reset_index(drop=True)
+    roll_max = left["max"].rolling(window=pivot_window, center=True).max()
+    roll_min = left["min"].rolling(window=pivot_window, center=True).min()
+    pivot_highs = left.loc[left["max"] == roll_max, "max"]
+    pivot_lows = left.loc[left["min"] == roll_min, "min"]
+
+    close = latest["close"]
+    tolerance = 0.02  # 「碰到/測到」視為在 2% 以內
+
+    bias = 0.0
+    candidate_supports = pivot_lows[pivot_lows <= close]
+    if not candidate_supports.empty:
+        support = candidate_supports.max()
+        dist = (close - support) / support if support else float("inf")
+        if 0 <= dist <= tolerance:
+            if fast_slope_up:
+                bias += 1
+                reasons.append(f"左側平台支撐約 {support:.2f} 附近拉回未破，且短線指標轉向，相對安全買點")
+            else:
+                caveats.append(f"股價貼近左側平台支撐約 {support:.2f}，但短線指標尚未轉向，先觀察不急著進場")
+
+    candidate_resistance = pivot_highs[pivot_highs >= close]
+    if not candidate_resistance.empty:
+        resistance = candidate_resistance.min()
+        today_high = latest.get("max", close)
+        dist = (resistance - today_high) / resistance if resistance else float("inf")
+        near_resistance = -tolerance <= dist <= tolerance  # 含今日已觸及/接近壓力區
+        today_open, yesterday_high = latest.get("今開"), latest.get("昨高")
+        failed_to_break_prev_high = (
+            tf == "日" and pd.notna(today_open) and pd.notna(yesterday_high)
+            and today_open < yesterday_high
+        )
+        if near_resistance and failed_to_break_prev_high:
+            bias -= 1
+            reasons.append(f"反彈碰到左側壓力區約 {resistance:.2f}，且今開未過昨高，宜獲利了結不凹單")
+        elif near_resistance:
+            caveats.append(f"股價接近左側壓力區約 {resistance:.2f}，留意反彈受阻風險")
+
+    return bias
+
+
+# ------------------------------------------------------------------
+# 特殊情境：大跌測到半年線(MA120)打出「第二隻腳未破」→「帶著鋼盔慢買」
+# 簡化偵測：近期K棒裡找出兩段「最低價貼近/跌破MA120」的區間（中間曾經
+# 反彈拉開至少5%），若第二段的低點沒有明顯跌破第一段低點，視為第二隻腳
+# 未破。僅日線適用（半年線＝120個交易日）。
+# ------------------------------------------------------------------
+def _detect_ma120_second_leg(df: pd.DataFrame, tf: str) -> bool:
+    ma_col = HALF_YEAR_MA.get(tf)
+    if ma_col is None or ma_col not in df.columns or len(df) < 40:
+        return False
+
+    window = df.tail(60).reset_index(drop=True)
+    ma = window[ma_col]
+    if ma.isna().all():
+        return False
+
+    near_support = (window["min"] <= ma * 1.03) & pd.notna(ma)
+    touch_idxs = window.index[near_support].tolist()
+    if len(touch_idxs) < 2:
+        return False
+
+    legs = [[touch_idxs[0]]]
+    for idx in touch_idxs[1:]:
+        base_low = window.loc[legs[-1][-1], "min"]
+        between_high = window.loc[legs[-1][-1]:idx, "max"].max()
+        if pd.notna(between_high) and pd.notna(base_low) and between_high >= base_low * 1.05:
+            legs.append([idx])
+        else:
+            legs[-1].append(idx)
+
+    if len(legs) < 2:
+        return False
+
+    leg1_low = window.loc[legs[0], "min"].min()
+    leg2_low = window.loc[legs[-1], "min"].min()
+    latest_idx = window.index[-1]
+    is_recent = (latest_idx - legs[-1][-1]) <= 3
+    undercut = pd.notna(leg1_low) and pd.notna(leg2_low) and leg2_low < leg1_low * 0.98
+
+    return is_recent and not undercut
+
+
+# ------------------------------------------------------------------
+# 乖離率過大：股價與快/慢均線同方向乖離都超過門檻 → 不論多空方向，
+# 嚴禁在此追高或摸底（只降級買訊，不用來加重賣訊，避免暴跌時被雙重扣分）。
+# ------------------------------------------------------------------
+def _check_extreme_deviation(tf: str, latest: pd.Series, reasons: List[str]) -> bool:
+    fast_col, key_col = FAST_MA.get(tf), KEY_MA.get(tf)
+    threshold = DEVIATION_THRESHOLD.get(tf)
+    if not fast_col or not key_col or threshold is None:
+        return False
+    close, fast, key = latest.get("close"), latest.get(fast_col), latest.get(key_col)
+    if pd.isna(close) or pd.isna(fast) or pd.isna(key) or fast == 0 or key == 0:
+        return False
+
+    fast_dev = (close - fast) / fast
+    key_dev = (close - key) / key
+    same_direction = (fast_dev > 0 and key_dev > 0) or (fast_dev < 0 and key_dev < 0)
+    if same_direction and abs(fast_dev) > threshold and abs(key_dev) > threshold:
+        reasons.append(
+            f"⚠️ 股價與 {fast_col}/{key_col} 乖離過大（{fast_dev:+.0%} / {key_dev:+.0%}），"
+            "不論多空方向，嚴禁在此追高或摸底"
+        )
+        return True
+    return False
+
+
+# ------------------------------------------------------------------
 # 主入口：單一週期綜合判讀
 # ------------------------------------------------------------------
 def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
@@ -249,7 +389,13 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
         df, tf, latest, macd_bearish_divergence, reasons, caveats)
     mtm_exit_alert = _step5_mtm(df, tf, latest, reasons)
 
-    score = four_key_bias * 2 + ma_bias * 2 + macd_bias + volume_bias
+    fast_col = FAST_MA.get(tf)
+    fast_slope_up = bool(fast_col) and ma_slope(df, fast_col) == "上揚"
+    platform_bias = _step6_left_side_platform(df, tf, latest, fast_slope_up, reasons, caveats)
+    ma120_second_leg = _detect_ma120_second_leg(df, tf)
+    extreme_deviation = _check_extreme_deviation(tf, latest, reasons)
+
+    score = four_key_bias * 2 + ma_bias * 2 + macd_bias + volume_bias + platform_bias
 
     # ---- 判定「賣出減碼」：符合任一條件即可（見 SOP 規則）----
     four_key_broken = tf == "日" and four_key_bias == -1
@@ -275,6 +421,19 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
         conclusion = "賣出減碼"
     else:
         conclusion = "觀望"
+
+    # ---- 乖離過大：不論多空方向，嚴禁在此追高摸底，買訊一律降級觀望 ----
+    if extreme_deviation and conclusion in ("買進", "加碼"):
+        caveats.append(f"雖符合買進/加碼條件，但乖離過大，先降級為觀望，等乖離收斂再說（原結論：{conclusion}）")
+        conclusion = "觀望"
+
+    # ---- 特殊情境：大跌測到半年線(MA120)第二隻腳未破，只在非賣出/加碼時提示 ----
+    if ma120_second_leg and conclusion not in ("賣出減碼", "加碼"):
+        caveats.append(
+            "偵測到大跌測到半年線(MA120)打出第二隻腳未破的特殊情境：可考慮「帶著鋼盔慢買」——"
+            "先進 5-10% 基本部位，待5分/60分指標確認低點墊高、均線轉平緩後，每日加碼約5%"
+            "（僅供分批佈局參考，非立即買進訊號）"
+        )
 
     abs_score = abs(score)
     if key_ma_down_veto or volume_bear_confirm or (ma_bias >= 4 and volume_bias > 0):

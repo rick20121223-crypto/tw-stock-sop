@@ -46,7 +46,10 @@ with st.sidebar:
         else:
             api_token = st.text_input("FinMind API Token", type="password")
 
-    lookback_days = st.slider("回溯天數（需 ≥60 天才能算出 MA35）", 60, 365, 180, step=10)
+    lookback_days = st.slider(
+        "回溯天數（需 ≥60 天才能算出 MA35；≥170 天才能算出半年線 MA120）",
+        60, 365, 180, step=10,
+    )
     refresh = st.button("🔄 重新整理資料", use_container_width=True)
 
 st.title("⚡ 日線快篩")
