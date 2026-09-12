@@ -1,15 +1,16 @@
-name: 本週法人排行自動輪替
+name: 每週法人排行輪替 + 股權分散表快照
 
 on:
   schedule:
     # 台灣時間每週一早上 05:30，比每天06:00的訊號通知(notify.yml)早半小時，
-    # 確保週一早上寄出的通知信已經是換過的新一週排行。
+    # 確保週一早上寄出的通知信已經是換過的新一週排行。TDCC股權分散表
+    # 通常週六就會更新，週一早上抓一定拿得到最新一週的資料。
     # = UTC 週日 21:30。
     - cron: "30 21 * * 0"
   workflow_dispatch: {}   # 允許在 GitHub Actions 頁面手動觸發，方便測試
 
 permissions:
-  contents: write   # 要把新算出的排行 commit 回 repo
+  contents: write   # 要把新算出的排行/快照 commit 回 repo
 
 jobs:
   rotate:
@@ -29,10 +30,13 @@ jobs:
       - name: 計算上週三大法人買賣超前十大（買超+賣超），覆寫本週輪替名單
         run: python institutional_ranking.py rotate
 
-      - name: 把新的本週法人排行 commit 回 repo
+      - name: 存TDCC股權分散表本週快照（大股東>400張持股比例，累積歷史用）
+        run: python holding_shares.py
+
+      - name: 把新的本週法人排行/股權分散表快照 commit 回 repo
         run: |
           git config user.name "sop-notify-bot"
           git config user.email "actions@github.com"
-          git add data/weekly_institutional_picks.json
-          git diff --cached --quiet || git commit -m "更新本週法人買賣超排行（自動）"
+          git add data/weekly_institutional_picks.json data/tdcc_holding_major_holder.csv
+          git diff --cached --quiet || git commit -m "更新本週法人買賣超排行、股權分散表快照（自動）"
           git push

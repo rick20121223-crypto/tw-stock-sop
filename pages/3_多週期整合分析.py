@@ -104,7 +104,8 @@ with st.sidebar:
         holding_n = st.slider(
             "連續同方向週數門檻 N", min_value=2, max_value=10, value=3, step=1,
             help="大股東(>400張)持股比例連續N週同方向變化才在日線圖標訊號。"
-                 "需要 FinMind Backer/Sponsor 等級的 Token 才能查得到資料。",
+                 "資料來自TDCC集保結算所，每週由排程自動累積歷史，剛上線或"
+                 "剛加進觀察清單的股票可能還沒有足夠週數。",
         )
 
     run_button = st.button("🔍 執行多週期整合分析", type="primary", use_container_width=True)
@@ -189,15 +190,14 @@ if dataframes:
     st.divider()
     st.markdown("### 價格走勢＋均線")
 
-    # 股權分散表只對日線有意義（TDCC週頻資料），且需要FinMind Backer/
-    # Sponsor付費等級，免費會員查詢會被FinMind擋掉，這裡接住錯誤顯示
-    # 友善提示，不讓整頁掛掉。
+    # 股權分散表只對日線有意義（TDCC週頻資料）。資料來自本地歷史檔（見
+    # holding_shares.py：TDCC官方API免費但只給最新一週，歷史要靠每週
+    # 排程自己累積），這裡保留try/except只是防呆，不是預期會查詢失敗。
     holding_signal_rows = pd.DataFrame()
     holding_error = None
     if "日" in dataframes and market == "TW":
         try:
-            with st.spinner("查詢股權分散表（大股東持股）..."):
-                holding_trend = fetch_major_holder_trend(stock_id, start_date, str(date.today()), api_token)
+            holding_trend = fetch_major_holder_trend(stock_id)
             if not holding_trend.empty:
                 holding_signals = compute_consecutive_signals(holding_trend, n=holding_n)
                 holding_signal_rows = align_to_trading_days(holding_signals, dataframes["日"])
@@ -214,11 +214,17 @@ if dataframes:
 
     if market == "TW" and "日" in dataframes:
         if holding_error:
-            st.warning(f"股權分散表（大股東持股）查詢失敗：{holding_error}\n\n"
-                       "這個資料集需要 FinMind Backer/Sponsor 付費等級的 Token 才能查詢，"
-                       "免費／一般註冊會員會查不到，不影響其他技術指標的判讀。")
+            st.warning(f"股權分散表（大股東持股）讀取失敗：{holding_error}\n\n不影響其他技術指標的判讀。")
         elif holding_signal_rows.empty:
-            st.caption("🔸 股權分散表（大股東持股）：查詢區間內沒有資料，或還沒有出現連續同向訊號。")
+            st.caption("🔸 股權分散表（大股東持股）：本地還沒有這檔股票的歷史資料"
+                       "（要等每週排程累積，通常是新上線或剛加進觀察清單）。")
+        elif len(holding_signal_rows) < holding_n:
+            latest = holding_signal_rows.iloc[-1]
+            st.caption(
+                f"🔸 股權分散表（大股東持股）：目前只累積了 {len(holding_signal_rows)} 週資料"
+                f"（要滿 {holding_n} 週才可能出現連續同向訊號），最新一週大股東持股比例 "
+                f"{latest['percent']:.2f}%。"
+            )
         else:
             marked = holding_signal_rows[holding_signal_rows["signal"] != ""]
             n_up = (marked["signal"] == "籌碼連續集中").sum()

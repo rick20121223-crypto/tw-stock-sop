@@ -1,75 +1,161 @@
 """
 股權分散表（大股東持股比例）趨勢訊號。
 
-資料來源：FinMind「TaiwanStockHoldingSharesPer」（股權持股分級表），
-週頻資料，欄位是 date / stock_id / HoldingSharesLevel / people / percent
-/ unit。**這個資料集只有 FinMind Backer/Sponsor 付費會員等級能查**，免費
-／一般註冊會員查詢會被 FinMind 擋掉（fetch_finmind 會丟 RuntimeError，
-訊息是 FinMind 本身回的「Your level is free...」），呼叫端要自己接住這個
-例外，顯示成友善提示，不要讓整頁掛掉。
+資料來源：TDCC（臺灣集中保管結算所）官方 OpenAPI「集保戶股權分散表」
+（https://openapi.tdcc.com.tw/v1/opendata/1-5），免金鑰、完全公開。
+跟原本考慮過的 FinMind TaiwanStockHoldingSharesPer 是同一份原始資料，
+但 TDCC 直接查是免費的，不用 FinMind 付費 Backer/Sponsor 等級。
 
-HoldingSharesLevel 是「股數」區間字串（不是「張」），例如 "1-999"、
-"400001-600000"、"1000001以上"，所以「大股東（>400張）」要自己把
->400,000股（下限 > 400,000）的級距挑出來、把 percent 加總，FinMind
-不會直接給你一個叫「>400張」的欄位值。
+**限制**：這個API只回傳「最新一週」全市場快照（一次約4千多檔證券、
+9~10MB），沒有查歷史日期的參數。所以歷史資料要靠 archive_tdcc_snapshot()
+每週執行一次、自己把「這週」的結果append進本地歷史檔
+（data/tdcc_holding_major_holder.csv），累積出可以算「連續N週」的歷史。
+剛上線、或某檔股票剛被加進觀察清單時，本地歷史可能是空的或只有
+幾週，要等排程多跑幾週才會有完整趨勢，這是正常現象，不是bug。
+
+TDCC「持股分級」欄位是數字代碼（1~17），不是級距文字，代碼對應的股數
+區間是官方公開的標準15級距分類（見下面 MAJOR_HOLDER_LEVELS 的說明），
+已經用台積電的真實資料驗證過。
 
 三個主要函式：
-    fetch_major_holder_trend()  抓資料＋篩級距＋依週加總 -> 大股東合計比例
+    archive_tdcc_snapshot()     每週執行：抓最新一週快照、篩大股東級距、
+                                 依股票加總、append進本地歷史檔
+    fetch_major_holder_trend()  從本地歷史檔讀出某檔股票的週趨勢
     compute_consecutive_signals()  算週對週diff/方向/連續N週同向訊號
-    align_to_trading_days()  週頻資料對齊到K線的最近一個交易日
+    align_to_trading_days()     週頻資料對齊到K線的最近一個交易日
 """
 
-import re
+from datetime import date as date_cls
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import requests
 
-from stock_core import fetch_finmind
+TDCC_HOLDING_URL = "https://openapi.tdcc.com.tw/v1/opendata/1-5"
 
-MAJOR_HOLDER_THRESHOLD_SHARES = 400_000  # 大股東門檻：>400張 = >400,000股
+# TDCC官方標準15級距分類（資料本身只給數字代碼，級距文字是官方公開的
+# 固定定義，已用台積電真實資料交叉驗證過）：
+#   1:1-999  2:1,000-5,000  3:5,001-10,000  4:10,001-15,000
+#   5:15,001-20,000  6:20,001-30,000  7:30,001-40,000  8:40,001-50,000
+#   9:50,001-100,000  10:100,001-200,000  11:200,001-400,000
+#   12:400,001-600,000  13:600,001-800,000  14:800,001-1,000,000
+#   15:1,000,001以上
+#   16:差異數調整（通常是0，用來讓加總對得上合計列）  17:合計（驗證用）
+# 「大股東(>400張)」= >400,000股，第11級距上限剛好400,000股不算，
+# 從第12級距（400,001股）開始才算，所以是 12~15 加總。
+MAJOR_HOLDER_LEVELS = {12, 13, 14, 15}
+
+DATA_DIR = Path(__file__).parent / "data"
+TDCC_ARCHIVE_FILE = DATA_DIR / "tdcc_holding_major_holder.csv"
+RETENTION_WEEKS = 60  # 保留約14個月歷史，跟「連續N週」的實用需求打平衡，避免檔案無限long
 
 
-def _holding_level_lower_bound(level: str) -> Optional[int]:
-    """從 HoldingSharesLevel 級距字串解析下限股數。常見格式："1-999"、
-    "400001-600000"、"1000001以上"，開頭都是數字，解析失敗回傳 None
-    （該列會被視為無法判斷級距、直接排除，不會誤算進大股東比例）。"""
-    if not level:
+def _strip_bom(key: str) -> str:
+    """TDCC回傳的JSON，第一個欄位鍵名會帶UTF-8 BOM字元（實測是
+    "\\ufeff資料日期"），直接用"資料日期"當key會抓不到、丟KeyError，
+    要先把每一列的key都normalize掉BOM。"""
+    return key.lstrip("﻿")
+
+
+def fetch_tdcc_snapshot() -> pd.DataFrame:
+    """
+    抓TDCC集保戶股權分散表「最新一週」全市場快照。
+    回傳欄位：date（該週資料日期）、stock_id、level（1~17的級距代碼）、
+    people、unit（股數）、percent（占集保庫存比例%）。
+    """
+    resp = requests.get(TDCC_HOLDING_URL, timeout=60)
+    resp.raise_for_status()
+    raw = resp.json()
+    if not raw:
+        return pd.DataFrame(columns=["date", "stock_id", "level", "people", "unit", "percent"])
+
+    rows = []
+    for row in raw:
+        normalized = {_strip_bom(k): v for k, v in row.items()}
+        try:
+            rows.append({
+                "date": normalized["資料日期"],
+                "stock_id": str(normalized["證券代號"]).strip(),
+                "level": int(normalized["持股分級"]),
+                "people": int(normalized["人數"]),
+                "unit": int(normalized["股數"]),
+                "percent": float(normalized["占集保庫存數比例%"]),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue  # 個別列格式異常就跳過，不讓整批資料因為一列壞掉而掛掉
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
+        df = df.dropna(subset=["date"])
+    return df
+
+
+def _aggregate_major_holders(snapshot: pd.DataFrame) -> pd.DataFrame:
+    """把全市場快照篩到>400張的級距(12~15)，依股票代碼加總，回傳
+    date/stock_id/percent/people/unit（每檔股票一列）。"""
+    if snapshot.empty:
+        return pd.DataFrame(columns=["date", "stock_id", "percent", "people", "unit"])
+    major = snapshot[snapshot["level"].isin(MAJOR_HOLDER_LEVELS)]
+    return (
+        major.groupby(["date", "stock_id"], as_index=False)
+        .agg(percent=("percent", "sum"), people=("people", "sum"), unit=("unit", "sum"))
+    )
+
+
+def archive_tdcc_snapshot() -> Optional[str]:
+    """
+    抓最新一週的TDCC股權分散表、篩>400張級距、依股票加總，append進本地
+    歷史檔（同一個資料日期只會存一次，重複執行不會重複累加）。
+    回傳這次存檔的資料日期字串（YYYY-MM-DD），沒有新資料、抓取失敗、
+    或這週已經存過了，都回傳 None。
+    """
+    snapshot = fetch_tdcc_snapshot()
+    if snapshot.empty:
         return None
-    match = re.match(r"\s*(\d+)", str(level).replace(",", ""))
-    return int(match.group(1)) if match else None
+
+    aggregated = _aggregate_major_holders(snapshot)
+    if aggregated.empty:
+        return None
+
+    new_date = aggregated["date"].iloc[0]
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if TDCC_ARCHIVE_FILE.exists():
+        existing = pd.read_csv(TDCC_ARCHIVE_FILE, parse_dates=["date"])
+        if (existing["date"] == new_date).any():
+            return None  # 這週的資料已經存過了，不重複寫入
+        combined = pd.concat([existing, aggregated], ignore_index=True)
+    else:
+        combined = aggregated
+
+    cutoff = pd.Timestamp(date_cls.today()) - pd.Timedelta(weeks=RETENTION_WEEKS)
+    combined = combined[combined["date"] >= cutoff]
+    combined = combined.sort_values(["date", "stock_id"]).reset_index(drop=True)
+    combined.to_csv(TDCC_ARCHIVE_FILE, index=False)
+    return new_date.strftime("%Y-%m-%d")
 
 
-def fetch_major_holder_trend(
-    stock_id: str, start_date: str, end_date: str, token: str,
-    threshold_shares: int = MAJOR_HOLDER_THRESHOLD_SHARES,
-) -> pd.DataFrame:
+def fetch_major_holder_trend(stock_id: str) -> pd.DataFrame:
     """
-    回傳「大股東（門檻以上，預設>400張）合計持股比例」週趨勢，欄位：
-    date、percent（合計比例%）、people（合計人數）、unit（合計股數）。
-    查詢失敗（含免費會員被FinMind擋掉）會直接讓 RuntimeError 往外拋，
-    由呼叫端（UI層）決定怎麼顯示，這裡不吞例外。
+    回傳「大股東（>400張）合計持股比例」週趨勢，從本地歷史檔讀取（不再
+    即時呼叫遠端API），欄位：date、percent、people、unit。歷史是靠每週
+    排程執行 archive_tdcc_snapshot() 累積的，資料不足（檔案不存在、或
+    這檔股票還沒被存過幾週）就回傳空/筆數少的 DataFrame，呼叫端據此
+    判斷「還在累積中」即可，不用特別接例外。
     """
-    raw = fetch_finmind("TaiwanStockHoldingSharesPer", stock_id, start_date, end_date, token)
-    if raw.empty:
-        return raw
-
-    raw = raw.copy()
-    for col in ("percent", "people", "unit"):
-        if col in raw.columns:
-            raw[col] = pd.to_numeric(raw[col], errors="coerce")
-
-    raw["_lower"] = raw["HoldingSharesLevel"].apply(_holding_level_lower_bound)
-    major = raw[raw["_lower"].notna() & (raw["_lower"] > threshold_shares)]
-    if major.empty:
+    if not TDCC_ARCHIVE_FILE.exists():
         return pd.DataFrame(columns=["date", "percent", "people", "unit"])
 
-    grouped = (
-        major.groupby("date", as_index=False)
-        .agg(percent=("percent", "sum"), people=("people", "sum"), unit=("unit", "sum"))
+    history = pd.read_csv(TDCC_ARCHIVE_FILE, parse_dates=["date"])
+    history["stock_id"] = history["stock_id"].astype(str)
+    matched = history[history["stock_id"] == str(stock_id).strip()]
+    return (
+        matched[["date", "percent", "people", "unit"]]
         .sort_values("date")
         .reset_index(drop=True)
     )
-    return grouped
 
 
 def compute_consecutive_signals(df_holding: pd.DataFrame, n: int = 3) -> pd.DataFrame:
@@ -139,3 +225,8 @@ def align_to_trading_days(df_weekly: pd.DataFrame, daily_df: pd.DataFrame) -> pd
     merged = pd.merge_asof(weekly, trading, left_on="date", right_on="trade_date", direction="backward")
     merged = merged.dropna(subset=["trade_date"]).reset_index(drop=True)
     return merged
+
+
+if __name__ == "__main__":
+    saved_date = archive_tdcc_snapshot()
+    print(f"已存TDCC股權分散表快照：{saved_date}" if saved_date else "沒有新的一週資料（可能這週已經存過，或抓取失敗）")
