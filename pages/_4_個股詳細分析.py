@@ -40,19 +40,14 @@ from stock_core import (
 
 st.set_page_config(page_title="個股詳細分析", layout="wide")
 
-# 台股慣例：紅漲綠跌（跟美股相反）
+# 台股慣例：紅漲綠跌（跟美股相反）。這兩個常數只餵給下面的 Plotly 圖表
+# 當K線/MACD柱狀圖的顏色，不是文字色——圖表色只要求 WCAG 1.4.11 的
+# 3:1（非文字對比），這組色對白色圖表背景本來就過（分別是 4.23:1 和
+# 3.31:1），不用像文字那樣加深。SOP結論、四關價、CCI 那幾處文字顏色走的
+# 是 Streamlit 原生的 :red[]/:green[]/:gray[] markdown 語法，本來就會跟著
+# 主題自動調整，同樣不用在這裡另外處理。
 UP_COLOR = "#e53935"    # 紅
 DOWN_COLOR = "#43a047"  # 綠
-FLAT_COLOR = "#9e9e9e"  # 灰
-
-
-def colored_text(value: float, label: str = "") -> str:
-    color = FLAT_COLOR
-    if value > 0:
-        color = UP_COLOR
-    elif value < 0:
-        color = DOWN_COLOR
-    return f"<span style='color:{color}; font-weight:600'>{label}{value:,.2f}</span>"
 
 
 def _get_secret(key: str) -> str:

@@ -38,10 +38,24 @@ from stock_core import unique_watchlist
 
 st.set_page_config(page_title="長線留倉", layout="wide", page_icon="📅")
 
-# 台股慣例：紅漲綠跌（跟美股相反）
-UP_COLOR = "#e53935"
-DOWN_COLOR = "#43a047"
-FLAT_COLOR = "#9e9e9e"
+
+def _resolve_theme() -> str:
+    """回傳 Streamlit 目前實際套用的主題（'light'／'dark'）。偵測不到（舊版
+    Streamlit、或還沒有真正的前端連線）一律當 light，不假設使用者在深色模式。"""
+    try:
+        theme_type = st.context.theme.type
+    except Exception:
+        theme_type = None
+    return theme_type if theme_type in ("light", "dark") else "light"
+
+
+# 台股慣例：紅漲綠跌（跟美股相反）。這裡是直接把文字上色貼在 Streamlit
+# 原生的頁面背景上（不是自己畫底色的卡片），淺色/深色主題各自要換一套
+# 通過 WCAG AA（≥4.5:1）的顏色，原本那組固定色對白底/深色底都不夠深/亮。
+if _resolve_theme() == "dark":
+    UP_COLOR, DOWN_COLOR, FLAT_COLOR = "#ff6659", "#66bb6a", "#b3b3b8"
+else:
+    UP_COLOR, DOWN_COLOR, FLAT_COLOR = "#c62828", "#2e7d32", "#616161"
 
 BUCKET_ORDER = {"加碼": 0, "買進": 1, "觀望": 2, "賣出減碼": 3}
 BUCKET_EMOJI = {"加碼": "🔺🔺", "買進": "🔺", "觀望": "⚪", "賣出減碼": "🔻"}
