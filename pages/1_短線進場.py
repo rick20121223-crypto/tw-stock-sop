@@ -23,18 +23,38 @@ from stock_core import get_intraday_data, run_all_indicators, unique_watchlist
 
 st.set_page_config(page_title="短線進場", layout="wide", page_icon="⚡")
 
-# 台股慣例：紅漲綠跌（跟美股相反）
-UP_COLOR = "#e53935"
-DOWN_COLOR = "#43a047"
-FLAT_COLOR = "#9e9e9e"
+
+def _resolve_theme() -> str:
+    """回傳 Streamlit 目前實際套用的主題（'light'／'dark'）。偵測不到（舊版
+    Streamlit、或還沒有真正的前端連線）一律當 light，不假設使用者在深色模式。"""
+    try:
+        theme_type = st.context.theme.type
+    except Exception:
+        theme_type = None
+    return theme_type if theme_type in ("light", "dark") else "light"
+
+
+# 台股慣例：紅漲綠跌（跟美股相反）。淺色/深色主題各自準備一套通過 WCAG AA
+# （文字對底色 ≥4.5:1）的顏色組合——不是同一份色票套兩種主題再算了事，
+# 深色主題預設是「跟隨系統」，手機本來就常是深色，兩套都要能看清楚。
+_LIGHT_BUCKET_STYLE = {
+    "加碼":     {"color": "#c62828", "bg": "#fdecea", "name": "#222222", "meta": "#555555"},
+    "買進":     {"color": "#c62828", "bg": "#fdecea", "name": "#222222", "meta": "#555555"},
+    "觀望":     {"color": "#616161", "bg": "#f5f5f5", "name": "#222222", "meta": "#555555"},
+    "賣出減碼": {"color": "#2e7d32", "bg": "#eaf6ec", "name": "#222222", "meta": "#555555"},
+}
+_DARK_BUCKET_STYLE = {
+    "加碼":     {"color": "#ff6659", "bg": "#3a1f1f", "name": "#e8e8ea", "meta": "#b3b3b8"},
+    "買進":     {"color": "#ff6659", "bg": "#3a1f1f", "name": "#e8e8ea", "meta": "#b3b3b8"},
+    "觀望":     {"color": "#b3b3b8", "bg": "#232326", "name": "#e8e8ea", "meta": "#b3b3b8"},
+    "賣出減碼": {"color": "#66bb6a", "bg": "#14241a", "name": "#e8e8ea", "meta": "#b3b3b8"},
+}
+BUCKET_STYLE = _DARK_BUCKET_STYLE if _resolve_theme() == "dark" else _LIGHT_BUCKET_STYLE
 
 BUCKET_ORDER = {"加碼": 0, "買進": 1, "觀望": 2, "賣出減碼": 3}
-BUCKET_STYLE = {
-    "加碼":     {"color": UP_COLOR,   "bg": "#fdecea"},
-    "買進":     {"color": UP_COLOR,   "bg": "#fdecea"},
-    "觀望":     {"color": FLAT_COLOR, "bg": "#f5f5f5"},
-    "賣出減碼": {"color": DOWN_COLOR, "bg": "#eaf6ec"},
-}
+# 跟 home.py 既有的 BUCKET_EMOJI 是同一套慣例：買賣結論不能只靠顏色傳達
+# （色盲、黑白列印、螢幕閱讀器都需要這個非色彩線索）。
+BUCKET_EMOJI = {"加碼": "🔺🔺", "買進": "🔺", "觀望": "⚪", "賣出減碼": "🔻"}
 
 
 def _get_secret(key: str) -> str:
@@ -147,24 +167,31 @@ c3.metric("⚪ 觀望", f"{watch_count} 檔")
 st.divider()
 
 
-def _stock_card(row) -> str:
+def _stock_card(row, badge: str = "") -> str:
+    """單張股票卡片。`badge` 給「本週法人排行」區塊標註🔄來源用，固定清單不傳。"""
     style = BUCKET_STYLE[row["分類"]]
     price = f"{row['收盤']:.2f}" if pd.notna(row["收盤"]) else "—"
+    icon = BUCKET_EMOJI[row["分類"]]
+    badge_html = f'<span style="font-size:11px; color:{style["meta"]};">{badge}</span> ' if badge else ""
+    # aria-label：整張卡是純裝飾用 div，screen reader 預設會把它當成一串沒有
+    # 邊界的文字唸出來，補上 role/aria-label 才聽得出「這是一項、內容是什麼」。
+    aria_label = f"{row['名稱']}（{row['代碼']}）：{row['最終建議']}"
     return f"""\
-<div style="border-left:4px solid {style['color']}; background:{style['bg']};
+<div role="listitem" aria-label="{aria_label}"
+     style="border-left:1px solid {style['color']}; background:{style['bg']};
             border-radius:6px; padding:10px 12px; height:100%;">
-  <div style="font-weight:600; font-size:13px; color:#222;">{row['名稱']}（{row['代碼']}）</div>
+  <div style="font-weight:600; font-size:14px; color:{style['name']};">{badge_html}{row['名稱']}（{row['代碼']}）</div>
   <div style="font-size:17px; font-weight:700; color:{style['color']}; margin:3px 0;">
-    {row['最終建議']}
+    {icon} {row['最終建議']}
   </div>
-  <div style="font-size:12px; color:#666;">收盤 {price} ・ 60分：{row['60分']} ・ 5分：{row['5分']}</div>
+  <div style="font-size:14px; color:{style['meta']};">收盤 {price} ・ 60分：{row['60分']} ・ 5分：{row['5分']}</div>
 </div>
 """
 
 
 cards_html = "".join(_stock_card(row) for _, row in df_overview.iterrows())
 st.markdown(
-    f'<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); '
+    f'<div role="list" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); '
     f'gap:10px;">{cards_html}</div>',
     unsafe_allow_html=True,
 )
@@ -209,25 +236,12 @@ else:
             (rotating_rows if result["狀態"] == "ok" else rotating_errors).append(result)
 
     if rotating_rows:
-        rotating_cards_html = ""
-        for row in rotating_rows:
-            style = BUCKET_STYLE[row["分類"]]
-            price = f"{row['收盤']:.2f}" if pd.notna(row["收盤"]) else "—"
-            badge = f"🔄 法人{side_map.get(row['代碼'], '')}"
-            rotating_cards_html += f"""\
-<div style="border-left:4px solid {style['color']}; background:{style['bg']};
-            border-radius:6px; padding:10px 12px; height:100%;">
-  <div style="font-weight:600; font-size:13px; color:#222;">
-    <span style="font-size:11px; color:#999;">{badge}</span> {row['名稱']}（{row['代碼']}）
-  </div>
-  <div style="font-size:17px; font-weight:700; color:{style['color']}; margin:3px 0;">
-    {row['最終建議']}
-  </div>
-  <div style="font-size:12px; color:#666;">收盤 {price} ・ 60分：{row['60分']} ・ 5分：{row['5分']}</div>
-</div>
-"""
+        rotating_cards_html = "".join(
+            _stock_card(row, badge=f"🔄 法人{side_map.get(row['代碼'], '')}")
+            for row in rotating_rows
+        )
         st.markdown(
-            f'<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); '
+            f'<div role="list" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); '
             f'gap:10px;">{rotating_cards_html}</div>',
             unsafe_allow_html=True,
         )

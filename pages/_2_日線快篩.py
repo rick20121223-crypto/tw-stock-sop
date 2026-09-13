@@ -23,10 +23,16 @@ from stock_core import get_stock_data, run_all_indicators, unique_watchlist
 
 st.set_page_config(page_title="日線快篩", layout="wide", page_icon="⚡")
 
-# 台股慣例：紅漲綠跌（跟美股相反）
-UP_COLOR = "#e53935"
-DOWN_COLOR = "#43a047"
-FLAT_COLOR = "#9e9e9e"
+
+def _resolve_theme() -> str:
+    """回傳 Streamlit 目前實際套用的主題（'light'／'dark'）。偵測不到（舊版
+    Streamlit、或還沒有真正的前端連線）一律當 light，不假設使用者在深色模式。"""
+    try:
+        theme_type = st.context.theme.type
+    except Exception:
+        theme_type = None
+    return theme_type if theme_type in ("light", "dark") else "light"
+
 
 CONCLUSION_ORDER = {"加碼": 0, "買進": 1, "觀望": 2, "賣出減碼": 3}
 CONCLUSION_EMOJI = {"加碼": "🔺🔺", "買進": "🔺", "觀望": "⚪", "賣出減碼": "🔻"}
@@ -142,35 +148,50 @@ c3.metric("⚪ 觀望", f"{watch_count} 檔")
 st.divider()
 
 
-BUCKET_STYLE = {
-    "加碼":     {"color": UP_COLOR,   "bg": "#fdecea"},
-    "買進":     {"color": UP_COLOR,   "bg": "#fdecea"},
-    "觀望":     {"color": FLAT_COLOR, "bg": "#f5f5f5"},
-    "賣出減碼": {"color": DOWN_COLOR, "bg": "#eaf6ec"},
+# 台股慣例：紅漲綠跌（跟美股相反）。淺色/深色主題各自準備一套通過 WCAG AA
+# （文字對底色 ≥4.5:1）的顏色組合——深色主題預設是「跟隨系統」，手機本來
+# 就常是深色，兩套都要能看清楚。跟「短線進場」頁面用同一套色票，兩頁看
+# 起來才會是同一個產品，不是各自風格。
+_LIGHT_BUCKET_STYLE = {
+    "加碼":     {"color": "#c62828", "bg": "#fdecea", "name": "#222222", "meta": "#555555"},
+    "買進":     {"color": "#c62828", "bg": "#fdecea", "name": "#222222", "meta": "#555555"},
+    "觀望":     {"color": "#616161", "bg": "#f5f5f5", "name": "#222222", "meta": "#555555"},
+    "賣出減碼": {"color": "#2e7d32", "bg": "#eaf6ec", "name": "#222222", "meta": "#555555"},
 }
+_DARK_BUCKET_STYLE = {
+    "加碼":     {"color": "#ff6659", "bg": "#3a1f1f", "name": "#e8e8ea", "meta": "#b3b3b8"},
+    "買進":     {"color": "#ff6659", "bg": "#3a1f1f", "name": "#e8e8ea", "meta": "#b3b3b8"},
+    "觀望":     {"color": "#b3b3b8", "bg": "#232326", "name": "#e8e8ea", "meta": "#b3b3b8"},
+    "賣出減碼": {"color": "#66bb6a", "bg": "#14241a", "name": "#e8e8ea", "meta": "#b3b3b8"},
+}
+BUCKET_STYLE = _DARK_BUCKET_STYLE if _resolve_theme() == "dark" else _LIGHT_BUCKET_STYLE
 
 
 def _stock_card(row, badge: str = "") -> str:
     style = BUCKET_STYLE[row["結論"]]
     price = f"{row['收盤']:.2f}" if pd.notna(row["收盤"]) else "—"
     reason = row["理由"] if row["理由"] else ""
-    badge_html = f'<span style="font-size:11px; color:#999;">{badge}</span> ' if badge else ""
+    badge_html = f'<span style="font-size:11px; color:{style["meta"]};">{badge}</span> ' if badge else ""
+    # aria-label：整張卡是純裝飾用 div，screen reader 預設會把它當成一串沒有
+    # 邊界的文字唸出來，補上 role/aria-label 才聽得出「這是一項、內容是什麼」。
+    aria_label = f"{row['名稱']}（{row['代碼']}）：{row['訊號']}"
     return f"""\
-<div style="border-left:4px solid {style['color']}; background:{style['bg']};
+<div role="listitem" aria-label="{aria_label}"
+     style="border-left:1px solid {style['color']}; background:{style['bg']};
             border-radius:6px; padding:10px 12px; height:100%;">
-  <div style="font-weight:600; font-size:13px; color:#222;">{badge_html}{row['名稱']}（{row['代碼']}）</div>
+  <div style="font-weight:600; font-size:14px; color:{style['name']};">{badge_html}{row['名稱']}（{row['代碼']}）</div>
   <div style="font-size:19px; font-weight:700; color:{style['color']}; margin:3px 0;">
     {row['訊號']}
   </div>
-  <div style="font-size:12px; color:#666;">收盤 {price} ・ 信心 {row['信心']} ・ 分數 {row['分數']:+.1f}</div>
-  <div style="font-size:11px; color:#888; margin-top:4px;">{reason}</div>
+  <div style="font-size:14px; color:{style['meta']};">收盤 {price} ・ 信心 {row['信心']} ・ 分數 {row['分數']:+.1f}</div>
+  <div style="font-size:13px; color:{style['meta']}; margin-top:4px;">{reason}</div>
 </div>
 """
 
 
 cards_html = "".join(_stock_card(row) for _, row in df_overview.iterrows())
 st.markdown(
-    f'<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); '
+    f'<div role="list" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); '
     f'gap:10px;">{cards_html}</div>',
     unsafe_allow_html=True,
 )
@@ -223,7 +244,7 @@ else:
             for row in rotating_rows
         )
         st.markdown(
-            f'<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); '
+            f'<div role="list" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); '
             f'gap:10px;">{rotating_cards_html}</div>',
             unsafe_allow_html=True,
         )
