@@ -211,7 +211,27 @@ def _changes_to_html(changes: list) -> str:
     return cards
 
 
+def _summarize_errors(errors: list) -> list:
+    """
+    把「Fugle 429 Rate limit」這種同一原因、常常一次影響一大串股票的錯誤，
+    收斂成一行摘要，避免通知信被幾十行幾乎一樣的錯誤訊息洗版；其他比較
+    少見、真的需要留意的錯誤（代碼錯誤、FinMind 額度用盡等）維持逐行列出。
+    """
+    rate_limited, other = [], []
+    for e in errors:
+        (rate_limited if "429 Rate limit exceeded" in e else other).append(e)
+    summary = list(other)
+    if rate_limited:
+        names = [e.split("：", 1)[0].removesuffix("短期").removesuffix("長期") for e in rate_limited]
+        summary.append(
+            f"{len(rate_limited)} 檔短期資料因 Fugle 429 流量限制暫時略過（{'、'.join(names)}），"
+            "之後排程會自動重試，不代表訊號有問題"
+        )
+    return summary
+
+
 def build_change_email(today: str, long_changes: list, short_changes: list, errors: list) -> tuple:
+    errors = _summarize_errors(errors)
     plain_lines = [f"台股 SOP 訊號異動通知（{today}）"]
     if long_changes:
         plain_lines += ["", HORIZON_LABEL["長期"] + "異動：", ""] + _changes_to_plain(long_changes)

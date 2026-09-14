@@ -16,10 +16,16 @@ FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 # 段時間內送了幾次——就算把 ThreadPoolExecutor 的並行數調低、加了429
 # 退避重試，只要好幾個執行緒同時起跑，加總的瞬間速率還是會超標。這裡用
 # 一個全域鎖 + 最後呼叫時間，強制「不管幾個執行緒，兩次 Fugle 請求之間
-# 至少間隔 0.5 秒」，才是真正卡住整體速率的地方。
+# 至少間隔一段時間」，才是真正卡住整體速率的地方。
+# 2026-09-14：自選股清單擴充到 45 檔台股個股後，notify_email.py 每次要
+# 抓 90 次分K（60分+5分 x 45檔），0.5秒間隔（約2次/秒）在整份清單跑完前
+# 常常撞 429（見通知信裡一大串 Rate limit exceeded），調鬆到 1.2 秒
+# （約50次/分鐘）換取「整份清單都抓得到」，犧牲的只是排程多跑幾十秒，
+# 對一天一次的通知不影響。若之後仍常撞限，代表帳號方案的額度更低，要
+# 再調大這個值。
 _fugle_rate_lock = threading.Lock()
 _fugle_last_call_at = [0.0]
-_FUGLE_MIN_INTERVAL_SEC = 0.5
+_FUGLE_MIN_INTERVAL_SEC = 1.2
 
 
 def _fugle_throttle() -> None:
@@ -48,20 +54,25 @@ def normalize_timeframe(label: str) -> str:
 
 
 # 但丁老師 SOP：各週期關鍵均線不同，斜率比價位本身更重要。
-# 週：5MA/20MA/35MA(生死線)　日：5MA/10MA/35MA(生死線)/120MA(半年線，用於偵測
-# 大跌測支撐的「第二隻腳未破」特殊情境)
-# 60分：20MA(多空線)/240MA(多空貢獻線)　5分：20MA(短線)/300MA(多空分水嶺)
+# 週：5MA/20MA/35MA(生死線)　日：5MA/10MA/20MA(月線)/35MA(生死線)/120MA(半年線，
+# 用於偵測大跌測支撐的「第二隻腳未破」特殊情境)/240MA(年線，大結構重型支撐)
+# 60分：20MA(多空線)/240MA(多空貢獻線)　5分：20MA(短線)/240MA、300MA(多空分水嶺，
+# 二擇一或並用，依個股流動性或使用習慣；決策邏輯仍以300MA為主要生死線)
 TIMEFRAME_MA_PERIODS = {
     "週": (5, 20, 35),
-    "日": (5, 10, 35, 120),
+    "日": (5, 10, 20, 35, 120, 240),
     "60分": (20, 240),
-    "5分": (20, 300),
+    "5分": (20, 240, 300),
 }
 FAST_MA = {"週": "MA5", "日": "MA5", "60分": "MA20", "5分": "MA20"}
 KEY_MA = {"週": "MA35", "日": "MA35", "60分": "MA240", "5分": "MA300"}
 # 半年線：只有日線有明確定義（120個交易日約半年），用於「大跌測到重要支撐
 # 打出第二隻腳未破」的特殊情境判斷（SOP：可採「帶著鋼盔慢買」）。
 HALF_YEAR_MA = {"日": "MA120"}
+# 年線：只有日線有明確定義（240個交易日約一年），純粹是大結構重型支撐的
+# 標示用途（不像60分/5分的240MA另有生死線/多空貢獻線角色），目前決策邏輯
+# 未使用，僅供圖表標註參考。
+YEAR_MA = {"日": "MA240"}
 
 # 乖離率門檻：股價偏離關鍵均線超過這個比例（不論多空方向），SOP 規定
 # 「嚴禁加碼或摸底」，各週期的正常波動幅度不同，門檻也不同。
@@ -249,9 +260,9 @@ def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str,
     # 加總」的速率，不是單一執行緒送幾次——所以每次真正發送請求前都要
     # 先過 _fugle_throttle() 這個全域節流閥，才能真的把整體速率壓下來；
     # 光靠降低 ThreadPoolExecutor 的並行數或失敗後重試，還是會一開始就
-    # 好幾個執行緒同時衝出去，一樣撞429。退避時間也拉長一點（2/4/8/16秒），
+    # 好幾個執行緒同時衝出去，一樣撞429。退避時間也拉長一點（2/4/8/16/32秒），
     # 給 Fugle 的流量窗口真正重置的時間。
-    max_attempts = 4
+    max_attempts = 5
     resp = None
     last_exc = None
     for attempt in range(max_attempts):
@@ -268,8 +279,16 @@ def get_intraday_data(symbol: str, timeframe: str, fugle_api_key: str,
             if "429" not in str(exc) and "Rate limit" not in str(exc):
                 raise
             if attempt < max_attempts - 1:
-                time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s, 16s
+                time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s, 16s, 32s
     if resp is None:
+        # SDK 丟出的原始例外訊息會帶完整 URL 與 JSON Response（一大串不利
+        # 閱讀），重試全部用盡後改丟簡短、好辨識的錯誤，避免這坨原始文字
+        # 一路傳到 notify_email.py 的通知信裡。
+        if last_exc is not None and ("429" in str(last_exc) or "Rate limit" in str(last_exc)):
+            raise RuntimeError(
+                f"Fugle API 429 Rate limit exceeded（{symbol} {timeframe}分線，"
+                f"已重試{max_attempts}次仍失敗）"
+            ) from last_exc
         raise last_exc
 
     data = resp.get("data", []) if isinstance(resp, dict) else resp
@@ -429,7 +448,7 @@ def run_all_indicators(df: pd.DataFrame, timeframe_label: str = "日") -> pd.Dat
     一次跑完全部指標計算，回傳完整 DataFrame。
     timeframe_label：「週」「日」「60分」「5分」（或對應的「週線」「日線」「60分線」
     「5分線」「60」「5」等寫法），決定均線要用哪組週期（依 SOP：
-    週 5/20/35、日 5/10/35、60分 20/240、5分 20/300）。
+    週 5/20/35、日 5/10/20/35/120/240、60分 20/240、5分 20/240/300）。
     """
     tf = normalize_timeframe(timeframe_label)
     df = calc_four_key_prices(df)

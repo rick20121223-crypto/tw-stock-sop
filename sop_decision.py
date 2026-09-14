@@ -5,11 +5,19 @@
 逐層檢查，高位階訊號可以否決低位階訊號（尤其：生死線下彎時，任何買訊都
 要降級；真正的頂背離必須「MACD背離 + OBV/BBI量價背離」同步出現才算數）。
 
-另外還有兩條跨步驟的規則：
+另外還有幾條跨步驟的規則：
 - 乖離過大：股價與快/慢均線同方向乖離都超過門檻，不論多空方向一律嚴禁
   追高摸底，「買進/加碼」會被降級為「觀望」。
 - 半年線(MA120)第二隻腳未破（僅日線）：大跌測到重要支撐、打出第二隻腳
   但未破前低的特殊情境，會在但書提示可考慮「帶著鋼盔慢買」分批佈局。
+- 生死線假跌破：生死線斜率仍上揚、股價僅暫時跌破時，視為主力假跌破/
+  夾起單洗盤，不下修為轉空判斷（只是不加分，不會倒扣）。
+- 日線10MA第二關：站上快均線(MA5)之外，若同時站上10MA，視為短線止跌
+  表態更明確，額外加分。
+- 週線回檔買點：長多回檔若落在週5MA～週20MA區間止跌打底，視為解鎖長線
+  佈局的買點，額外加分。
+- 5分線進場三關卡：20MA站穩＋BBI＋MACD須同步轉多，三者齊備才視為短線
+  試單的安全門檻；只要有一項未同步，「買進/加碼」一律降級為「觀望」。
 
 單一週期判讀：evaluate_timeframe()
 跨週期整合（日/週/60分/5分）：combine_timeframes()，採「為日線留倉，
@@ -84,6 +92,11 @@ def _step2_ma(df: pd.DataFrame, tf: str, latest: pd.Series,
         if above_fast and fast_slope == "上揚":
             ma_bias += 1
             reasons.append(f"{fast_col} 上揚且股價站上，短線動能偏多")
+            # 日線口訣：站穩5MA只是第一關，能同時挑戰/站上10MA才是止跌
+            # 表態更明確的第二關，額外加分（僅日線適用，10MA只在日線計算）。
+            if tf == "日" and pd.notna(latest.get("MA10")) and latest["close"] >= latest["MA10"]:
+                ma_bias += 1
+                reasons.append("同時站上10MA，短線止跌表態更明確")
         elif (not above_fast) and fast_slope == "下彎":
             ma_bias -= 1
             reasons.append(f"{fast_col} 下彎且股價跌破，短線動能偏空")
@@ -99,13 +112,48 @@ def _step2_ma(df: pd.DataFrame, tf: str, latest: pd.Series,
             if not above_key:
                 key_ma_down_veto = True
                 reasons.append(f"且股價已跌破 {key_col}，結構偏空，反彈視為誘多假動作")
-        elif key_slope == "上揚" and above_key:
-            ma_bias += 2
-            reasons.append(f"生死線 {key_col} 上揚且站上，中長線結構偏多")
+        elif key_slope == "上揚":
+            if above_key:
+                ma_bias += 2
+                reasons.append(f"生死線 {key_col} 上揚且站上，中長線結構偏多")
+            else:
+                caveats.append(
+                    f"{key_col} 仍上揚但股價暫時跌破，視為主力假跌破/夾起單洗盤，不判轉空"
+                )
     else:
         caveats.append(f"{key_col} 資料不足（可能是資料期間不夠長）")
 
     return ma_bias, key_ma_down_veto
+
+
+# ------------------------------------------------------------------
+# Step 2 附則（僅週線適用）：長多回檔若落在週5MA～週20MA區間止跌打底，
+# 視為解鎖長線佈局的買點。
+# 簡化偵測：收盤落在 MA5/MA20 區間內，且最近幾根K棒的低點不再創新低
+# （不是教科書式嚴謹的打底型態辨識，僅供參考）。
+# ------------------------------------------------------------------
+def _step2_weekly_pullback_zone(df: pd.DataFrame, tf: str, latest: pd.Series,
+                                 reasons: List[str]) -> float:
+    if tf != "週":
+        return 0.0
+
+    ma5, ma20, close = latest.get("MA5"), latest.get("MA20"), latest.get("close")
+    if pd.isna(ma5) or pd.isna(ma20) or pd.isna(close) or len(df) < 4:
+        return 0.0
+
+    lower, upper = min(ma5, ma20), max(ma5, ma20)
+    if not (lower <= close <= upper):
+        return 0.0
+
+    recent_lows = df["min"].tail(4)
+    if recent_lows.isna().any():
+        return 0.0
+    stabilizing = recent_lows.iloc[-1] >= recent_lows.iloc[:-1].min()
+    if not stabilizing:
+        return 0.0
+
+    reasons.append("週線回檔落於週5MA～週20MA區間且止跌打底，屬解鎖長線佈局的買點")
+    return 1.0
 
 
 # ------------------------------------------------------------------
@@ -384,6 +432,7 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
 
     four_key_bias = _step1_four_key_prices(tf, latest, reasons, caveats)
     ma_bias, key_ma_down_veto = _step2_ma(df, tf, latest, reasons, caveats)
+    ma_bias += _step2_weekly_pullback_zone(df, tf, latest, reasons)
     macd_bias, dead_cross, macd_bearish_divergence = _step3_macd(df, latest, reasons, caveats)
     volume_bias, volume_bear_confirm = _step4_volume(
         df, tf, latest, macd_bearish_divergence, reasons, caveats)
@@ -426,6 +475,20 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     if extreme_deviation and conclusion in ("買進", "加碼"):
         caveats.append(f"雖符合買進/加碼條件，但乖離過大，先降級為觀望，等乖離收斂再說（原結論：{conclusion}）")
         conclusion = "觀望"
+
+    # ---- 5分線進場三關卡：20MA站穩＋BBI＋MACD須同步轉多，三者齊備才是短線
+    # 試單的安全門檻；只要有一項未同步，買進/加碼一律降級為觀望或輕倉試單 ----
+    if tf == "5分" and conclusion in ("買進", "加碼"):
+        above_fast_5m = bool(fast_col) and pd.notna(latest.get(fast_col)) and latest["close"] >= latest[fast_col]
+        ma20_holding = above_fast_5m and fast_slope_up
+        bbi_slope = ma_slope(df, "BBI") if "BBI" in latest.index else "資料不足"
+        macd_turning_up = pd.notna(latest.get("DIF")) and latest["DIF"] > 0
+        if not (ma20_holding and bbi_slope == "上揚" and macd_turning_up):
+            caveats.append(
+                "5分線進場三關卡（20MA站穩＋BBI＋MACD同步轉多）未同時齊備，"
+                f"降級為觀望或輕倉試單（原結論：{conclusion}）"
+            )
+            conclusion = "觀望"
 
     # ---- 特殊情境：大跌測到半年線(MA120)第二隻腳未破，只在非賣出/加碼時提示 ----
     if ma120_second_leg and conclusion not in ("賣出減碼", "加碼"):

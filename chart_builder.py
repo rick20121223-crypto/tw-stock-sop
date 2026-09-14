@@ -12,7 +12,7 @@ OBV／MTM／CCI／KD 那幾張細部圖表還是只有 pages/_4_個股詳細分�
 
 import plotly.graph_objects as go
 
-from stock_core import HALF_YEAR_MA, KEY_MA, TIMEFRAME_MA_PERIODS, normalize_timeframe
+from stock_core import HALF_YEAR_MA, KEY_MA, TIMEFRAME_MA_PERIODS, YEAR_MA, normalize_timeframe
 
 # 台股慣例：紅漲綠跌（跟美股相反）
 UP_COLOR = "#e53935"
@@ -41,6 +41,7 @@ def build_price_chart(df, timeframe_label: str, holding_signals=None, height: in
     ma_periods = TIMEFRAME_MA_PERIODS[tf_key]
     key_ma_col = KEY_MA[tf_key]
     half_year_ma_col = HALF_YEAR_MA.get(tf_key)
+    year_ma_col = YEAR_MA.get(tf_key)
     ma_colors = {f"MA{p}": _MA_PALETTE[i % len(_MA_PALETTE)] for i, p in enumerate(ma_periods)}
     for ma_col, color in ma_colors.items():
         if ma_col in df.columns:
@@ -48,6 +49,8 @@ def build_price_chart(df, timeframe_label: str, holding_signals=None, height: in
                 label = f"{ma_col}（生死線）"
             elif ma_col == half_year_ma_col:
                 label = f"{ma_col}（半年線）"
+            elif ma_col == year_ma_col:
+                label = f"{ma_col}（年線）"
             else:
                 label = ma_col
             fig.add_trace(go.Scatter(
