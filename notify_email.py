@@ -14,6 +14,12 @@ SOP結論，只要任一種「跟上次不一樣」就寄一封 Email 通知，�
 
 狀態檔：data/last_signals.json，記錄上一次每檔股票的「長期」「短期」
 分類，本次執行後會覆寫最新結果並由 workflow 自動 commit 回 repo。
+
+2026-09-15：GitHub 的 schedule cron 沒有 SLA，偶爾會延遲或整次漏跳
+（曾發生排定時間過了一小時以上都沒觸發），所以 notify.yml 現在在原本
+時間點之外多排了兩個備援時間點。為了避免同一天被觸發兩三次就重複判讀、
+重複寄信，main() 一開始會先檢查 signal_log.csv 今天是不是已經跑過，
+跑過就直接跳過（見 _already_ran_today()）。
 """
 
 import concurrent.futures
@@ -61,6 +67,27 @@ def full_watchlist():
         result.append((name, code, market, f"法人排行({side})"))
         seen_codes.add(code)
     return result
+
+
+def _already_ran_today(today: str) -> bool:
+    """
+    檢查 signal_log.csv 最後一行的日期是不是就是今天。同一天的多次執行
+    一定是「原排程 + 備援排程」重複觸發（同一天不會有兩個不同日期交錯），
+    所以只看最後一行就夠，不用整份掃描。
+    """
+    if not SIGNAL_LOG_FILE.exists():
+        return False
+    with open(SIGNAL_LOG_FILE, "rb") as f:
+        try:
+            f.seek(-2, os.SEEK_END)
+            while f.read(1) != b"\n":
+                f.seek(-2, os.SEEK_CUR)
+        except OSError:
+            f.seek(0)  # 檔案不到2個byte（理論上不會發生，防呆）
+        last_line = f.readline().decode("utf-8", errors="ignore").strip()
+    if not last_line or last_line.startswith("date,"):
+        return False
+    return last_line.split(",", 1)[0] == today
 
 
 def load_last_state() -> dict:
@@ -301,6 +328,11 @@ def main() -> None:
     if not fugle_api_key:
         print("⚠️ 未設定 FUGLE_API_KEY，本次只會判讀長期（週+日），短期（60分/5分）略過。")
 
+    today = str(date.today())
+    if _already_ran_today(today):
+        print(f"{today}：今天已經跑過一次了（可能是備援排程時間點重複觸發），跳過本次執行，不重複判讀、不重複寄信。")
+        return
+
     # 每天執行時順便存一份上櫃法人快照（TPEx開放資料只有「最新一天」，
     # 靠每天存檔累積，才能在每週一算出「本週法人買賣超排行」，見
     # institutional_ranking.py）。存檔失敗不影響本次通知主流程。
@@ -360,8 +392,6 @@ def main() -> None:
                                            "prev": prev["短期"], "new": short_bucket})
 
     save_state(new_state)
-
-    today = str(date.today())
     append_signal_log(today, log_rows)
 
     if is_first_run:
