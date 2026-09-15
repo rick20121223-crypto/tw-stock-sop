@@ -1,0 +1,46 @@
+name: 台股 SOP 盤中即時複查
+
+on:
+  schedule:
+    # 台灣時間 09:00~13:30（開盤時段）每15分鐘跑一次，只複查「短期」
+    # 目前是買進/加碼的股票（見 notify_intraday.py），不是每日批次那種
+    # 全部45檔的判讀，用量小很多。
+    # 09:00~12:45 = UTC 01:00~04:45（同一個UTC星期，不用像每日06:00
+    # 通知那樣跨日調整星期）
+    - cron: "*/15 1-4 * * 1-5"
+    # 13:00~13:30（收盤前）= UTC 05:00~05:30
+    - cron: "0,15,30 5 * * 1-5"
+  workflow_dispatch: {}   # 允許在 GitHub Actions 頁面手動觸發，方便測試
+
+permissions:
+  contents: write   # 訊號有變化時要把 last_signals.json / signal_log.csv commit 回 repo
+
+jobs:
+  intraday-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 盤中複查「短期」買進/加碼股票，訊號有變化就寄信
+        env:
+          FUGLE_API_KEY: ${{ secrets.FUGLE_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python notify_intraday.py
+
+      - name: 訊號有變化時，把最新狀態與紀錄 commit 回 repo
+        run: |
+          git config user.name "sop-notify-bot"
+          git config user.email "actions@github.com"
+          git add data/last_signals.json data/signal_log.csv
+          git diff --cached --quiet || git commit -m "盤中訊號異動更新（自動）"
+          git push

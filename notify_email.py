@@ -20,6 +20,11 @@ SOP結論，只要任一種「跟上次不一樣」就寄一封 Email 通知，�
 時間點之外多排了兩個備援時間點。為了避免同一天被觸發兩三次就重複判讀、
 重複寄信，main() 一開始會先檢查 signal_log.csv 今天是不是已經跑過，
 跑過就直接跳過（見 _already_ran_today()）。
+
+本檔只負責「開盤前一次的每日批次」。開盤時段（09:00~13:30）的盤中
+即時複查是另一支獨立腳本 notify_intraday.py（被 .github/workflows/
+intraday_check.yml 每15分鐘呼叫一次），只複查本檔判讀出來、目前「短期」
+為買進/加碼的股票，共用這裡的 STATE_FILE / SIGNAL_LOG_FILE 與寄信邏輯。
 """
 
 import concurrent.futures
