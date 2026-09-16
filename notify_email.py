@@ -32,7 +32,7 @@ import csv
 import json
 import os
 import smtplib
-from datetime import date
+from datetime import date, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -44,6 +44,7 @@ from stock_core import get_intraday_data, run_all_indicators, unique_watchlist
 
 STATE_FILE = Path(__file__).parent / "data" / "last_signals.json"
 SIGNAL_LOG_FILE = Path(__file__).parent / "data" / "signal_log.csv"
+SIGNAL_CHANGES_FILE = Path(__file__).parent / "data" / "signal_changes.csv"
 
 # 跟網站同一套配色：台股慣例紅漲綠跌（買進/加碼=紅、賣出減碼=綠）
 BUCKET_ORDER = {"加碼": 0, "買進": 1, "觀望": 2, "賣出減碼": 3}
@@ -115,16 +116,72 @@ def append_signal_log(today: str, rows: list) -> None:
     """
     每天執行都會呼叫（不管有沒有寄信），把每檔股票當天的收盤價、SOP
     結論、判讀屬於「長期」或「短期」都記一筆，方便之後回頭做正式回測。
+
+    row 可以帶自己的 "date"（長期用的是日K實際收盤日期，見
+    multi_timeframe_check.full_check() 回傳的「資料日期」），沒帶就用
+    today（短期沿用原本行為，一律用呼叫當下的系統日期）。寫入前會先
+    讀現有檔案，同一個 (code, horizon, date, signal, close) 如果已經
+    一模一樣記錄過就跳過不重複寫——這是為了避免盤前提早跑、假日手動
+    重跑（workflow_dispatch）等情況抓到同一根日K、判讀結果完全相同，
+    卻被記成兩個不同的「日子」，讓之後拿這份log做回測時被假的重複快照
+    誤導。注意這裡連 signal/close 也一起比對，不是只比對日期：短期一天
+    內本來就可能因為盤中複查記錄到好幾筆「同一天、不同訊號」的真實變化
+    （見 notify_intraday.py），這種不能被當成重複而濾掉，只有內容也完全
+    相同時才視為真正的重複快照。
     """
     SIGNAL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     file_exists = SIGNAL_LOG_FILE.exists()
+
+    already_logged = set()
+    if file_exists:
+        with open(SIGNAL_LOG_FILE, "r", newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                already_logged.add((row["code"], row["horizon"], row["date"],
+                                     row["signal"], row["close"]))
+
+    new_rows = []
+    for r in rows:
+        row_date = r.get("date") or today
+        key = (r["code"], r["horizon"], row_date, r["signal"], str(r["close"]))
+        if key in already_logged:
+            continue
+        already_logged.add(key)
+        new_rows.append((row_date, r))
+
+    if not new_rows:
+        return
+
     with open(SIGNAL_LOG_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(["date", "name", "code", "market", "horizon", "close", "signal"])
-        for r in rows:
-            writer.writerow([today, r["name"], r["code"], r["market"],
+        for row_date, r in new_rows:
+            writer.writerow([row_date, r["name"], r["code"], r["market"],
                               r["horizon"], r["close"], r["signal"]])
+
+
+def append_signal_changes(changes: list, horizon: str) -> None:
+    """
+    事件式紀錄：只在訊號「真的改變」時才寫一筆，跟 signal_log.csv 那種
+    「不管有沒有變化、每次執行都記一筆快照」不同。目的是之後要做「照
+    訊號進出場」的模擬回測時，可以直接照這份事件序列組出每一段「進場
+    時間+價格 → 出場時間+價格」的持有區間，不用再從snapshot log自己
+    猜訊號到底是哪個時間點變的（尤其短期一天可能複查很多次）。
+    changes 的每個元素預期帶 name/code/source/prev/new/close。
+    """
+    if not changes:
+        return
+    SIGNAL_CHANGES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = SIGNAL_CHANGES_FILE.exists()
+    now = datetime.now().isoformat(timespec="seconds")
+    with open(SIGNAL_CHANGES_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["timestamp", "name", "code", "market", "horizon",
+                              "prev_signal", "new_signal", "close", "source"])
+        for c in changes:
+            writer.writerow([now, c["name"], c["code"], c.get("market", "TW"), horizon,
+                              c["prev"], c["new"], c.get("close"), c.get("source", "固定")])
 
 
 def send_email(subject: str, plain_body: str, html_body: str,
@@ -287,12 +344,17 @@ def build_change_email(today: str, long_changes: list, short_changes: list, erro
 
 
 def _check_long(code: str, market: str, api_token: str):
-    """長期：週+日整合，跟首頁「長線留倉」同一套。回傳 (分類, 收盤, 錯誤訊息)"""
+    """
+    長期：週+日整合，跟首頁「長線留倉」同一套。
+    回傳 (分類, 收盤, 資料日期, 錯誤訊息)——資料日期是日K最後一根的實際
+    交易日，用來讓 signal_log.csv 記錄真正的交易日而不是呼叫當下的系統
+    日期（見 append_signal_log()）。
+    """
     try:
         result = full_check(code, market, api_token, "", "2024-01-01")
-        return classify_final(result["最終建議"]), result.get("收盤"), None
+        return classify_final(result["最終建議"]), result.get("收盤"), result.get("資料日期"), None
     except Exception as exc:  # noqa: BLE001
-        return None, None, str(exc)
+        return None, None, None, str(exc)
 
 
 def _check_short(code: str, market: str, fugle_api_key: str):
@@ -356,9 +418,9 @@ def main() -> None:
     log_rows = []
 
     def _check_one(name, code, market, source):
-        long_bucket, long_close, long_err = _check_long(code, market, api_token)
+        long_bucket, long_close, long_date, long_err = _check_long(code, market, api_token)
         short_bucket, short_close, short_err = _check_short(code, market, fugle_api_key)
-        return (name, code, market, source, long_bucket, long_close, long_err,
+        return (name, code, market, source, long_bucket, long_close, long_date, long_err,
                 short_bucket, short_close, short_err)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -367,7 +429,7 @@ def main() -> None:
             for name, code, market, source in full_watchlist()
         ]
         for future in concurrent.futures.as_completed(futures):
-            (name, code, market, source, long_bucket, long_close, long_err,
+            (name, code, market, source, long_bucket, long_close, long_date, long_err,
              short_bucket, short_close, short_err) = future.result()
 
             if long_err is not None:
@@ -382,7 +444,8 @@ def main() -> None:
                                "短期": short_bucket, "來源": source}
 
             log_rows.append({"name": name, "code": code, "market": market,
-                              "horizon": "長期", "close": long_close, "signal": long_bucket})
+                              "horizon": "長期", "close": long_close, "signal": long_bucket,
+                              "date": long_date})
             if short_bucket is not None:
                 log_rows.append({"name": name, "code": code, "market": market,
                                   "horizon": "短期", "close": short_close, "signal": short_bucket})
@@ -390,14 +453,16 @@ def main() -> None:
             prev = last_state.get(key)
             if prev:
                 if prev.get("長期") and prev["長期"] != long_bucket:
-                    long_changes.append({"name": name, "code": code, "source": source,
-                                          "prev": prev["長期"], "new": long_bucket})
+                    long_changes.append({"name": name, "code": code, "market": market, "source": source,
+                                          "prev": prev["長期"], "new": long_bucket, "close": long_close})
                 if short_bucket is not None and prev.get("短期") and prev["短期"] != short_bucket:
-                    short_changes.append({"name": name, "code": code, "source": source,
-                                           "prev": prev["短期"], "new": short_bucket})
+                    short_changes.append({"name": name, "code": code, "market": market, "source": source,
+                                           "prev": prev["短期"], "new": short_bucket, "close": short_close})
 
     save_state(new_state)
     append_signal_log(today, log_rows)
+    append_signal_changes(long_changes, "長期")
+    append_signal_changes(short_changes, "短期")
 
     if is_first_run:
         plain, html = build_first_run_email(today, new_state)

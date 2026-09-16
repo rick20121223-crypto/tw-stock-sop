@@ -31,6 +31,7 @@ from notify_email import (
     _changes_to_plain,
     _check_short,
     _html_wrap,
+    append_signal_changes,
     append_signal_log,
     load_last_state,
     save_state,
@@ -84,8 +85,8 @@ def main() -> None:
             # 批次那樣收斂錯誤訊息塞進信裡。
             continue
         if new_bucket != v["短期"]:
-            changes.append({"name": v["名稱"], "code": code, "source": v.get("來源", "固定"),
-                             "prev": v["短期"], "new": new_bucket})
+            changes.append({"name": v["名稱"], "code": code, "market": "TW", "source": v.get("來源", "固定"),
+                             "prev": v["短期"], "new": new_bucket, "close": close})
             log_rows.append({"name": v["名稱"], "code": code, "market": "TW",
                               "horizon": "短期", "close": close, "signal": new_bucket})
             state[key]["短期"] = new_bucket
@@ -96,6 +97,7 @@ def main() -> None:
 
     save_state(state)
     append_signal_log(today, log_rows)
+    append_signal_changes(changes, "短期")
 
     changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
     plain, html = build_intraday_email(today, changes)

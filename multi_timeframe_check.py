@@ -73,6 +73,10 @@ def full_check(stock_id: str, market: str, api_token: str, fugle_api_key: str,
     result = combine_timeframes(verdicts)
     latest_close = df_day.iloc[-1]["close"]
     result["收盤"] = float(latest_close) if pd.notna(latest_close) else None
+    # 日線最後一根K棒的實際交易日期（不是呼叫當下的系統日期）。週末/盤前
+    # 重跑會抓到同一根日K，這個欄位讓呼叫端（notify_email.py）能判斷這批
+    # 資料其實還是同一個交易日，避免把它當成新的一天重複記進signal_log。
+    result["資料日期"] = str(df_day.iloc[-1]["date"])
     if include_dataframes:
         result["原始資料"] = dataframes
     return result

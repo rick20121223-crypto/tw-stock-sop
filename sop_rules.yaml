@@ -1,0 +1,180 @@
+# updated 2026-09-18：Step6左側平台改成偵測「多次觸碰的整理箱體」，不再只抄
+#   離現在最近的單次孤立擺動點（原本的算法跟但丁老師目視判讀的平台常對不起來）
+# updated 2026-09-16：新增CCI(順勢指標)第三代領先指標，比照MTM於60分/5分線
+#   折返±100時強制觀望示警，不計入評分、不凌駕MTM/MACD/均線既有位階
+# updated 2026-09-15：初版規則搬遷 + 新增訊號未同步與乖離過大強制觀望
+#
+# 但丁老師 SOP 判讀規則設定檔。
+# 改規則只需要改這個檔案，不用動 sop_decision.py 裡的程式碼。
+# 結構：
+#   indicators   ：各步驟共用的門檻值/視窗長度（原本寫死在函式內的數字）
+#   buy_rules    ：判定「買進」的條件
+#   add_rules    ：判定「加碼」的條件
+#   watch_rules  ：判定/強制降級為「觀望」的條件（含兩條新規則）
+#   sell_rules   ：判定「賣出減碼」的條件
+#   special_notes：不改變結論、只附加提示的特殊情境
+
+version: "1.2"
+
+# ==================================================================
+# 共用指標參數
+# ==================================================================
+indicators:
+
+  ma_slope:
+    lookback: 3   # ma_slope() 比較幾根K棒前的均線值來判斷上揚/下彎/走平
+
+  four_key_prices:
+    applicable_timeframes: ["日"]   # 四關價只在日線適用
+
+  ma_step:
+    second_gate_ma: "MA10"     # 日線第二關快均線：站穩5MA之外，同時站上10MA視為止跌更明確
+    second_gate_bonus: 1
+    fast_up_bonus: 1           # 快均線上揚且站上 → 加分
+    fast_down_penalty: -1      # 快均線下彎且跌破 → 扣分
+    key_down_penalty: -2       # 生死線下彎 → 重扣分（任何買訊都要降級）
+    key_up_bonus: 2            # 生死線上揚且站上 → 加分
+
+  weekly_pullback_zone:
+    min_bars: 4                # 至少要有4根K棒才判斷「止跌打底」
+    recent_low_window: 4       # 檢查最近幾根K棒的低點是否不再創新低
+    bonus: 1.0                 # 週線回檔落於週5MA~週20MA區間且止跌打底的加分
+
+  macd:
+    divergence_lookback: 20              # 頂背離偵測回看根數
+    dif_above_zero_bonus: 1              # DIF在零軸之上
+    dif_below_zero_penalty: -1           # DIF在零軸之下
+    golden_cross_below_zero_bonus: 1     # 零軸下黃金交叉，僅弱勢反彈
+    golden_cross_above_zero_bonus: 2     # 零軸上黃金交叉，動能轉強
+    dead_cross_penalty: -2               # 死亡交叉
+
+  volume:
+    rising_bonus: 1     # OBV均線（或5分線用BBI）上揚
+    falling_penalty: -1 # OBV均線（或5分線用BBI）下彎
+
+  mtm:
+    applicable_timeframes: ["60分"]
+    lookback_bars: 3    # 檢查近幾根K棒是否死叉翻空
+
+  cci:
+    # 第三代領先指標，與 MTM 並列參考，不強制優先順序（見 watch_rules.cci_exit_alert_downgrade）。
+    # 二線輔助指標：不接進 score，只用來觸發跟MTM同等級的「觀望」示警，不凌駕MTM/MACD/均線。
+    applicable_timeframes: ["60分", "5分"]
+    signal_threshold: 100      # 突破後折返穿越 ±100 視為轉折訊號
+    extreme_threshold: 200     # 突破 ±200 視為極端訊號，需特別關注（僅提示，不變更結論）
+    lookback_bars: 3           # 檢查近幾根K棒是否曾站上+100或跌破-100後折返（比照MTM的lookback_bars）
+    role: "secondary"          # 二線輔助指標，與 MTM 並列參考，不強制優先順序
+    note: "預設參考值，非但丁老師原始教材明確數字，可依實戰經驗調整"
+
+  left_side_platform:
+    exclude_recent_bars: 5   # 排除最近幾根K棒，避免抓到自己
+    pivot_window: 5          # 局部高低點判斷的前後窗口
+    min_left_bars: 20        # 左側資料至少要有幾根才計算
+    tolerance_pct: 0.02      # 「碰到/測到」視為在這個百分比以內；同時也用來判斷
+                              # 兩個擺動點是不是「同一個平台價位」（見下方叢集判斷）
+    support_bonus: 1         # 測到左側支撐未破 + 快均線轉向 → 加分
+    resistance_penalty: -1   # 碰左側壓力 + 今開未過昨高 → 扣分
+    platform_lookback_bars:  # 平台偵測只看「最近一段」歷史，避免抓到很久以前、
+                              # 跟目前價格結構毫無關聯的孤立擺動點（真正的整理平台
+                              # 是「最近這一段時間反覆測試」，不是「史上離現價最近」）
+      週: 26      # 約半年
+      日: 60      # 約3個月
+      60分: 80    # 約2週交易時段
+      5分: 240    # 約4個交易日
+    platform_min_touches: 2  # 同一價位帶至少要被觸碰幾次，才算「整理平台」而不是
+                              # 單次孤立擺動——預設值非但丁老師教材明確數字，可依
+                              # 實戰經驗調整
+
+  ma120_second_leg:
+    applicable_timeframes: ["日"]   # 半年線只有日線有明確定義
+    min_bars: 40
+    window_bars: 60
+    near_support_tolerance: 1.03    # 低點貼近/跌破MA120 3%以內視為測到支撐
+    leg_split_rebound: 1.05         # 中間反彈拉開5%以上才算新的一腳
+    undercut_tolerance: 0.98        # 第二腳低點跌破第一腳超過2%才算真正跌破
+    recent_bars: 3                  # 第二腳須發生在最近幾根K棒內才算數
+
+  deviation_threshold:   # 乖離率門檻：股價偏離關鍵均線超過此比例，不論多空方向一律嚴禁追高摸底
+    週: 0.25
+    日: 0.20
+    60分: 0.10
+    5分: 0.06
+
+  scoring:
+    four_key_weight: 2
+    ma_weight: 2
+    confidence_mid_abs_score: 4   # |score| >= 此值 → 信心中
+    confidence_low_abs_score: 2   # |score| < 此值 → 信心低（介於兩者之間為中）
+
+# ==================================================================
+# 買進 buy_rules
+# ==================================================================
+buy_rules:
+  score_threshold: 3   # 綜合分數 >= 門檻 → 買進
+
+# ==================================================================
+# 加碼 add_rules
+# ==================================================================
+add_rules:
+  ma_bias_min: 3          # 均線偏多分數門檻
+  macd_bias_min: 1        # MACD偏多分數門檻
+  four_key_bias_min: 0    # 四關價不可偏空
+  volume_bias_min: 0      # 量能不可偏空
+  addon_ma_bias: 4        # 均線偏多分數達此值且量能為正 → 升級為加碼（否則只算買進）
+  weekly_all_synced_label: "加碼（各週期已同步翻多）"
+
+# ==================================================================
+# 觀望 watch_rules（含強制降級為觀望的規則）
+# ==================================================================
+watch_rules:
+
+  caution_only_on_macd_divergence: true   # 只有MACD單獨背離、均線與量能都還沒同步走壞 → 先觀望不追空
+  mtm_60m_exit_downgrade: true            # 60分MTM翻空但生死線未破 → 觀望，短線先出場觀察
+  cci_exit_alert_downgrade: true          # 60分/5分 CCI由+100之上折返跌破 → 觀望，與MTM並列同等級示警，不凌駕MTM/MACD/均線
+  extreme_deviation_downgrade: true       # 乖離過大 → 買進/加碼一律降級觀望
+
+  # 新規則①：買進/加碼的三項同時條件，任一項未確認就一律觀望，
+  # 不可輸出「買進（部分週期訊號仍待確認）」這類模糊結論。
+  buy_add_sync_gate:
+    enabled: true
+    apply_timeframes: ["週", "日", "60分", "5分"]
+    require:
+      - ma_slope_up            # 均線上揚
+      - macd_volume_sync_up    # MACD/BBI(OBV) 同步轉向
+      - support_intact         # 支撐未破（生死線未跌破、四關價未破底）
+    downgrade_to: "觀望"
+    message: "買進/加碼三項同時條件（均線上揚、MACD/BBI同步轉向、支撐未破）未全數確認，判定為觀望"
+
+  # 新規則②：週線出現短期噴出型態時，即使短週期指標翻多，仍強制降級為觀望，
+  # 須等到站回週5MA至週20MA之間才重新評估。
+  weekly_blowoff_guard:
+    enabled: true
+    applicable_timeframes: ["週"]
+    leg_lookback_weeks: 8         # 回看幾週計算單一波段漲幅
+    leg_gain_threshold: 0.80      # 波段漲幅超過此比例視為遠超歷史正常區間
+    deviation_ma_columns: ["MA5", "MA20", "MA35"]  # 需同時脫離的均線
+    deviation_threshold: 0.35     # 與上述均線的乖離同時超過此比例才算「明顯脫離」
+    downgrade_to: "觀望"
+    message_template: "週線短期噴出型態：近{lookback}週單一波段漲幅達{gain:.0%}，且明顯脫離所有均線（{ma_cols}），即使短週期指標翻多仍強制降級為觀望，須等到站回週5MA至週20MA之間才重新評估"
+
+  # 跨週期整合（combine_timeframes）：長天期已翻多但未全數同步時，
+  # 禁止輸出模糊結論，一律判定觀望。
+  combine_timeframes_ambiguous_guard:
+    forbid_ambiguous_partial_bullish: true
+    replacement_conclusion: "觀望（各週期訊號尚未同步翻多，依SOP不可輸出模糊結論，暫不追價）"
+
+# ==================================================================
+# 賣出減碼 sell_rules
+# ==================================================================
+sell_rules:
+  key_ma_down_veto: true       # 生死線下彎且跌破 → 硬否決，直接賣出減碼
+  four_key_broken: true        # 日線四關價：今開跌破昨低 → 賣出減碼
+  dead_cross_confirmed: true   # MACD死亡交叉 且 均線同步偏空 → 賣出減碼
+  volume_bear_confirm: true    # MACD頂背離 + OBV/BBI同步走壞（真正頂背離） → 賣出減碼
+  score_threshold: -3          # 綜合分數 <= 門檻 → 賣出減碼
+
+# ==================================================================
+# 特殊情境提示（不改變買賣結論，只附加but書）
+# ==================================================================
+special_notes:
+  ma120_second_leg_hint: true   # 大跌測半年線(MA120)打出第二隻腳未破 → 提示「帶著鋼盔慢買」
