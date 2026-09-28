@@ -5,3 +5,6 @@ __pycache__/
 venv/
 .DS_Store
 _fugle_probe.py
+# backtest_signal_log.py 的輸出：按需重跑產生的報告，不是像 signal_log.csv
+# 那種由排程自動累積的狀態，不需要進版控
+data/signal_backtest.csv
