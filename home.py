@@ -27,7 +27,7 @@ API 金鑰設定（部署到 Streamlit Community Cloud 時）：
 """
 
 import concurrent.futures
-from datetime import date
+from datetime import date, datetime
 
 import streamlit as st
 
@@ -69,6 +69,28 @@ def _get_secret(key: str) -> str:
         return ""
 
 
+# 資料日期跟「現在」隔幾個日曆天以上，就在畫面上標警示色——用日曆天不是
+# 交易日，門檻抓寬鬆一點（4天，蓋過一般週末），避免把「上週五收盤、週末
+# 沒開盤」誤判成資料太舊，同時還是能抓到真的卡住太久沒更新的情況（例如
+# FinMind額度用盡、資料來源延遲）。
+_STALE_THRESHOLD_DAYS = 4
+
+
+def _data_date_html(data_date: str) -> str:
+    """回傳一小行灰色（或警示色）的「資料到 MM/DD」HTML，讓使用者看得出
+    這個結論是根據哪一天的收盤算出來的，不用自己猜資料新不新。"""
+    if not data_date:
+        return "<span style='font-size:0.75em;color:#999'>資料日期未知</span>"
+    try:
+        parsed = datetime.strptime(data_date, "%Y-%m-%d").date()
+    except ValueError:
+        return f"<span style='font-size:0.75em;color:#999'>資料至 {data_date}</span>"
+    stale = (date.today() - parsed).days > _STALE_THRESHOLD_DAYS
+    color = "#e65100" if stale else "#999"
+    prefix = "⚠️ " if stale else ""
+    return f"<span style='font-size:0.75em;color:{color}'>{prefix}資料至 {parsed.strftime('%m/%d')}</span>"
+
+
 with st.sidebar:
     with st.expander("🔑 API 金鑰狀態"):
         secret_token = _get_secret("FINMIND_TOKEN")
@@ -106,6 +128,7 @@ def analyze_stock(name: str, code: str, market: str, token: str, start_date: str
         return {
             "名稱": name, "代碼": code, "market": market, "狀態": "ok",
             "收盤": result.get("收盤"),
+            "資料日期": result.get("資料日期"),
             "最終建議": result["最終建議"],
             "週線": detail.get("週", {}).get("結論", "—"),
             "日線": detail.get("日", {}).get("結論", "—"),
@@ -159,7 +182,8 @@ for r in rows:
     c = st.columns([2, 1, 1, 3, 2, 2, 1.2])
     c[0].write(r["名稱"])
     c[1].write(r["代碼"])
-    c[2].write(f"{r['收盤']:.2f}" if r["收盤"] is not None else "—")
+    close_text = f"{r['收盤']:.2f}" if r["收盤"] is not None else "—"
+    c[2].markdown(f"{close_text}<br>{_data_date_html(r.get('資料日期'))}", unsafe_allow_html=True)
     color = BUCKET_COLOR[r["分類"]]
     emoji = BUCKET_EMOJI[r["分類"]]
     c[3].markdown(f"<span style='color:{color}; font-weight:600'>{emoji} {r['最終建議']}</span>",
@@ -226,7 +250,8 @@ else:
             c = st.columns([2, 1, 1, 3, 1.3, 2, 2])
             c[0].write(r["名稱"])
             c[1].write(r["代碼"])
-            c[2].write(f"{r['收盤']:.2f}" if r["收盤"] is not None else "—")
+            close_text = f"{r['收盤']:.2f}" if r["收盤"] is not None else "—"
+            c[2].markdown(f"{close_text}<br>{_data_date_html(r.get('資料日期'))}", unsafe_allow_html=True)
             color = BUCKET_COLOR[r["分類"]]
             emoji = BUCKET_EMOJI[r["分類"]]
             c[3].markdown(f"<span style='color:{color}; font-weight:600'>{emoji} {r['最終建議']}</span>",
