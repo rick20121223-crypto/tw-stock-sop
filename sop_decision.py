@@ -549,6 +549,8 @@ def _detect_triangle_consolidation(df: pd.DataFrame, tf: str,
     lookback = cfg.get("lookback_bars")
     min_pivots = cfg.get("min_pivots", 2)
     breakout_tolerance = cfg["breakout_tolerance_pct"]
+    range_tolerance = cfg.get("range_tolerance_pct", 0.01)
+    compression_ratio = cfg.get("compression_ratio", 0.7)
 
     window = (df.tail(lookback) if lookback else df).reset_index(drop=True)
     if len(window) < pivot_window * 2 + 3:
@@ -560,15 +562,43 @@ def _detect_triangle_consolidation(df: pd.DataFrame, tf: str,
     if len(pivot_highs) < min_pivots or len(pivot_lows) < min_pivots:
         return inactive
 
-    highs_sorted = pivot_highs.sort_index()
-    lows_sorted = pivot_lows.sort_index()
-    highs_not_rising = highs_sorted.iloc[-1] <= highs_sorted.iloc[0]   # 高點不再創高
-    lows_not_falling = lows_sorted.iloc[-1] >= lows_sorted.iloc[0]     # 低點不再破低
-    if not (highs_not_rising and lows_not_falling):
+    # 收斂區間的邊界（range_high/range_low）要排除最新一根K棒才能算，不然
+    # 一旦最新這根K棒帶量突破，它自己的高/低價會被算進「近半段」邊界裡，
+    # 邊界跟著突破一起膨脹，永遠不可能判定為「突破」——這跟W底/M頭不能拿
+    # 右底/右頭自己判斷「回測不破」是同一類問題。
+    body = window.iloc[:-1]
+    if len(body) < pivot_window * 2 + 2:
         return inactive
 
-    range_high, range_low = highs_sorted.max(), lows_sorted.min()
+    # 只比較窗口「頭尾兩個轉折點」會漏抓中間曾經走出去（創出更高/更低極值）
+    # 又縮回來的情況——那是區間中段暴衝過，不是真正的收斂。改成比較「前半段
+    # vs 後半段」的高低點與區間寬度：後半段不能創新高/新低，而且區間寬度要
+    # 收斂到前半段的 compression_ratio 以下，才算真正「收斂」。
+    mid = len(body) // 2
+    earlier_high, earlier_low = body.iloc[:mid]["max"].max(), body.iloc[:mid]["min"].min()
+    recent_high, recent_low = body.iloc[mid:]["max"].max(), body.iloc[mid:]["min"].min()
+    if pd.isna(earlier_high) or pd.isna(earlier_low) or pd.isna(recent_high) or pd.isna(recent_low):
+        return inactive
+
+    highs_not_rising = recent_high <= earlier_high * (1 + range_tolerance)  # 高點不再創高
+    lows_not_falling = recent_low >= earlier_low * (1 - range_tolerance)    # 低點不再破低
+    earlier_width = earlier_high - earlier_low
+    recent_width = recent_high - recent_low
+    converging = earlier_width > 0 and recent_width <= earlier_width * compression_ratio
+    if not (highs_not_rising and lows_not_falling and converging):
+        return inactive
+
+    # 收斂區間的邊界要用「近半段（不含最新K棒）」的高低點，不能用整個回看
+    # 窗口（含早半段那段還沒收斂、較寬）的絕對高低，否則就算近半段真的收斂
+    # 了，回報出來的邊界跟突破判斷還是會被早半段的寬區間污染。另外「有沒有
+    # 收斂」不能只看「比早半段窄」這個相對值，近半段本身相對股價的寬度還是
+    # 要夠窄，否則會把「還是很寬、只是沒那麼寬」的區間誤判成三角收斂。
+    range_high, range_low = recent_high, recent_low
     if pd.isna(range_high) or pd.isna(range_low) or range_high <= range_low:
+        return inactive
+
+    max_range_pct = cfg.get("max_range_pct", 0.20)
+    if range_low <= 0 or (range_high - range_low) / range_low > max_range_pct:
         return inactive
 
     close = window.iloc[-1].get("close")
