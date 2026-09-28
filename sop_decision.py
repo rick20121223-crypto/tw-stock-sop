@@ -20,7 +20,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import yaml
@@ -351,6 +351,39 @@ def _step5b_cci(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str]
 # 是「這個價位有沒有反覆測試過」，不是「歷史上離現價最近的隨便一個擺動點」
 # （後者可能是一年前一根孤立的插針，跟現在的價格結構毫無關係）。
 # ------------------------------------------------------------------
+def _find_pivot_points(window: pd.DataFrame, pivot_window: int) -> tuple:
+    """在 window（需已 reset_index）裡找局部高/低轉折點，回傳 (pivot_highs, pivot_lows)，
+    兩者皆為以「window 內位置」為 index 的 pd.Series。中心點兩側資料不足的位置
+    （包含最新幾根K棒）不會被 rolling(center=True) 標記為轉折點，天然排除
+    「還在形成中、尚未確認的擺動」。"""
+    roll_max = window["max"].rolling(window=pivot_window, center=True).max()
+    roll_min = window["min"].rolling(window=pivot_window, center=True).min()
+    pivot_highs = window.loc[window["max"] == roll_max, "max"]
+    pivot_lows = window.loc[window["min"] == roll_min, "min"]
+    return pivot_highs, pivot_lows
+
+
+def _merge_adjacent_pivots(pivots: pd.Series, extreme: str) -> pd.Series:
+    """走平的高/低點常常連續好幾根K棒都被 rolling(center=True) 標記為轉折點
+    （例如波段最低點附近有兩根K棒同低），這些相鄰的標記其實是同一個擺動，
+    只保留其中最極端的一個代表點，避免下游把同一個擺動誤判成兩個獨立轉折。"""
+    if pivots.empty:
+        return pivots
+    positions = pivots.index.tolist()
+    groups = [[positions[0]]]
+    for pos in positions[1:]:
+        if pos - groups[-1][-1] <= 1:
+            groups[-1].append(pos)
+        else:
+            groups.append([pos])
+    merged = {}
+    for group in groups:
+        values = pivots.loc[group]
+        rep = values.idxmin() if extreme == "min" else values.idxmax()
+        merged[rep] = values.loc[rep]
+    return pd.Series(merged).sort_index()
+
+
 def _cluster_pivot_levels(pivots: pd.Series, tolerance: float, min_touches: int) -> List[float]:
     values = sorted(v for v in pivots.dropna().tolist())
     if not values:
@@ -366,6 +399,221 @@ def _cluster_pivot_levels(pivots: pd.Series, tolerance: float, min_touches: int)
 
 
 # ------------------------------------------------------------------
+# 型態學輔助觸發層（pattern_recognition，見 sop_rules.yaml 同名區塊註解）
+# ⚠️ 以下三個偵測函式的輸出永遠不直接產生買賣結論：
+#   - W底/M頭：只附加「注意轉折」提醒到 reasons，是否「轉折訊號確認」還是
+#     「型態轉折待確認」純粹是措辭差異，最終買賣結論仍由 evaluate_timeframe()
+#     既有的四關價/均線/MACD/OBV分層否決制決定；偵測到的頸線位置回傳給
+#     呼叫端，併入 Step6 左側平台支撐/壓力的候選來源之一。
+#   - 三角收斂：回傳目前狀態供 evaluate_timeframe() 決定是否要把買進/加碼
+#     強制降級為觀望（見 watch_rules.triangle_consolidation_downgrade）。
+# ------------------------------------------------------------------
+def _detect_w_bottom(df: pd.DataFrame, fast_slope_up: bool, macd_bias: float,
+                      reasons: List[str]) -> Optional[float]:
+    cfg = RULES.get("pattern_recognition", {}).get("w_bottom", {})
+    if not cfg.get("enabled", True):
+        return None
+
+    pivot_window = cfg["pivot_window"]
+    lookback = cfg.get("lookback_bars")
+    tolerance = cfg["neckline_tolerance_pct"]
+
+    window = (df.tail(lookback) if lookback else df).reset_index(drop=True)
+    if len(window) < pivot_window * 2 + 3:
+        return None
+
+    pivot_highs, pivot_lows = _find_pivot_points(window, pivot_window)
+    pivot_lows = _merge_adjacent_pivots(pivot_lows, "min")
+    if len(pivot_lows) < 2:
+        return None
+
+    low_positions = pivot_lows.index.tolist()
+    left_pos, right_pos = low_positions[-2], low_positions[-1]
+    left_low, right_low = pivot_lows.loc[left_pos], pivot_lows.loc[right_pos]
+    if not (right_low > left_low):  # 右底比左底高才算數
+        return None
+
+    between_highs = pivot_highs[(pivot_highs.index > left_pos) & (pivot_highs.index < right_pos)]
+    neckline = (between_highs.max() if not between_highs.empty
+                else window.loc[left_pos:right_pos, "max"].max())
+    if pd.isna(neckline) or neckline <= right_low:
+        return None
+
+    after_right = window.loc[right_pos:]
+    broke_above = after_right[after_right["close"] > neckline]
+    if broke_above.empty:
+        return None  # 尚未突破頸線，型態還沒走完，先不觸發提醒
+
+    # 只檢查「突破頸線之後」的拉回有沒有跌破頸線——右底本身收盤本來就在頸線
+    # 之下（那正是它被判定為底部的原因），不能拿右底自己去判斷「回測不破」。
+    since_breakout = window.loc[broke_above.index[0]:]
+    if since_breakout["close"].min() < neckline * (1 - tolerance):
+        return None  # 回測時已經跌破頸線，型態失敗
+
+    latest = window.iloc[-1]
+    if not (pd.notna(latest.get("open")) and pd.notna(latest.get("close"))
+            and latest["close"] > latest["open"]):
+        return None  # 還沒出現回測不破後的確認紅K，先不觸發提醒
+
+    synced = fast_slope_up and macd_bias > 0
+    if synced:
+        reasons.append(
+            f"📐 偵測到W底型態（左底約{left_low:.2f}／右底約{right_low:.2f}，頸線約{neckline:.2f}），"
+            "回測頸線不破後收紅K，且均線斜率與MACD同步轉多，轉折訊號確認"
+            "（輔助提醒，結論仍以四關價/均線/MACD/OBV分層否決制為準）"
+        )
+    else:
+        reasons.append(
+            f"📐 偵測到W底型態（左底約{left_low:.2f}／右底約{right_low:.2f}，頸線約{neckline:.2f}），"
+            "回測頸線不破後收紅K，但均線斜率/MACD尚未同步轉多，標記為「型態轉折待確認」"
+            "（僅供觀察，非買進依據）"
+        )
+    return neckline
+
+
+def _detect_m_top(df: pd.DataFrame, fast_slope_down: bool, macd_bias: float,
+                   reasons: List[str]) -> Optional[float]:
+    cfg = RULES.get("pattern_recognition", {}).get("m_top", {})
+    if not cfg.get("enabled", True):
+        return None
+
+    pivot_window = cfg["pivot_window"]
+    lookback = cfg.get("lookback_bars")
+    tolerance = cfg["neckline_tolerance_pct"]
+
+    window = (df.tail(lookback) if lookback else df).reset_index(drop=True)
+    if len(window) < pivot_window * 2 + 3:
+        return None
+
+    pivot_highs, pivot_lows = _find_pivot_points(window, pivot_window)
+    pivot_highs = _merge_adjacent_pivots(pivot_highs, "max")
+    if len(pivot_highs) < 2:
+        return None
+
+    high_positions = pivot_highs.index.tolist()
+    left_pos, right_pos = high_positions[-2], high_positions[-1]
+    left_high, right_high = pivot_highs.loc[left_pos], pivot_highs.loc[right_pos]
+    if not (right_high < left_high):  # 右頭比左頭低才算數
+        return None
+
+    between_lows = pivot_lows[(pivot_lows.index > left_pos) & (pivot_lows.index < right_pos)]
+    neckline = (between_lows.min() if not between_lows.empty
+                else window.loc[left_pos:right_pos, "min"].min())
+    if pd.isna(neckline) or neckline >= right_high:
+        return None
+
+    after_right = window.loc[right_pos:]
+    broke_below = after_right[after_right["close"] < neckline]
+    if broke_below.empty:
+        return None  # 尚未跌破頸線，型態還沒走完，先不觸發提醒
+
+    # 只檢查「跌破頸線之後」的反彈有沒有站回頸線之上——右頭本身收盤本來就在
+    # 頸線之上（那正是它被判定為頭部的原因），不能拿右頭自己去判斷「回測不破」。
+    since_breakdown = window.loc[broke_below.index[0]:]
+    if since_breakdown["close"].max() > neckline * (1 + tolerance):
+        return None  # 回測時又站回頸線之上，型態失敗
+
+    latest = window.iloc[-1]
+    if not (pd.notna(latest.get("open")) and pd.notna(latest.get("close"))
+            and latest["close"] < latest["open"]):
+        return None  # 還沒出現回測不破後的確認黑K，先不觸發提醒
+
+    synced = fast_slope_down and macd_bias < 0
+    if synced:
+        reasons.append(
+            f"📐 偵測到M頭型態（左頭約{left_high:.2f}／右頭約{right_high:.2f}，頸線約{neckline:.2f}），"
+            "回測頸線不破後收黑K，且均線斜率與MACD同步轉空，轉折訊號確認"
+            "（輔助提醒，結論仍以四關價/均線/MACD/OBV分層否決制為準）"
+        )
+    else:
+        reasons.append(
+            f"📐 偵測到M頭型態（左頭約{left_high:.2f}／右頭約{right_high:.2f}，頸線約{neckline:.2f}），"
+            "回測頸線不破後收黑K，但均線斜率/MACD尚未同步轉空，標記為「型態轉折待確認」"
+            "（僅供觀察，非賣出依據）"
+        )
+    return neckline
+
+
+def _detect_triangle_consolidation(df: pd.DataFrame, tf: str,
+                                    reasons: List[str], caveats: List[str]) -> dict:
+    """回傳 {"active": bool, "breakout": None|"up"|"down", "volume_confirmed": bool}。
+    active=True 且 volume_confirmed=False 時（不論是還沒突破、或突破了但量能未同步
+    的假突破），呼叫端應強制降級觀望；volume_confirmed=True 時解除強制觀望，改由
+    既有六步SOP分數/否決邏輯正常決定結論。"""
+    cfg = RULES.get("pattern_recognition", {}).get("triangle_consolidation", {})
+    inactive = {"active": False, "breakout": None, "volume_confirmed": False}
+    if not cfg.get("enabled", True):
+        return inactive
+
+    pivot_window = cfg["pivot_window"]
+    lookback = cfg.get("lookback_bars")
+    min_pivots = cfg.get("min_pivots", 2)
+    breakout_tolerance = cfg["breakout_tolerance_pct"]
+
+    window = (df.tail(lookback) if lookback else df).reset_index(drop=True)
+    if len(window) < pivot_window * 2 + 3:
+        return inactive
+
+    pivot_highs, pivot_lows = _find_pivot_points(window, pivot_window)
+    pivot_highs = _merge_adjacent_pivots(pivot_highs, "max")
+    pivot_lows = _merge_adjacent_pivots(pivot_lows, "min")
+    if len(pivot_highs) < min_pivots or len(pivot_lows) < min_pivots:
+        return inactive
+
+    highs_sorted = pivot_highs.sort_index()
+    lows_sorted = pivot_lows.sort_index()
+    highs_not_rising = highs_sorted.iloc[-1] <= highs_sorted.iloc[0]   # 高點不再創高
+    lows_not_falling = lows_sorted.iloc[-1] >= lows_sorted.iloc[0]     # 低點不再破低
+    if not (highs_not_rising and lows_not_falling):
+        return inactive
+
+    range_high, range_low = highs_sorted.max(), lows_sorted.min()
+    if pd.isna(range_high) or pd.isna(range_low) or range_high <= range_low:
+        return inactive
+
+    close = window.iloc[-1].get("close")
+    breakout = None
+    if pd.notna(close):
+        if close > range_high * (1 + breakout_tolerance):
+            breakout = "up"
+        elif close < range_low * (1 - breakout_tolerance):
+            breakout = "down"
+
+    if breakout is None:
+        caveats.append(
+            f"📐 偵測到三角收斂區間（高點約{range_high:.2f}／低點約{range_low:.2f}，高點不再創高、"
+            "低點不再破低），依SOP列為觀望、持續監控，等待帶量突破區間"
+        )
+        return {"active": True, "breakout": None, "volume_confirmed": False}
+
+    slope_lookback = RULES["indicators"]["ma_slope"]["lookback"]
+    use_bbi = tf == "5分"
+    vol_col = "BBI" if use_bbi else "OBV_MA"
+    vol_label = "BBI" if use_bbi else "OBV"
+    vol_slope = ma_slope(df, vol_col, lookback=slope_lookback) if vol_col in df.columns else "資料不足"
+    volume_confirmed = (
+        (breakout == "up" and vol_slope == "上揚")
+        or (breakout == "down" and vol_slope == "下彎")
+    )
+    direction_label = "向上" if breakout == "up" else "向下"
+    boundary = range_high if breakout == "up" else range_low
+
+    if volume_confirmed:
+        reasons.append(
+            f"📐 三角收斂區間{direction_label}突破（區間邊界約{boundary:.2f}），且{vol_label}同步"
+            f"{'放大' if breakout == 'up' else '轉弱'}，確認帶量突破，解除觀望標記，"
+            "改依六步SOP判讀邏輯正常決定結論"
+        )
+    else:
+        caveats.append(
+            f"📐 三角收斂區間看似{direction_label}突破（區間邊界約{boundary:.2f}），但{vol_label}"
+            f"未同步{'放大' if breakout == 'up' else '轉弱'}，判定為假突破，暫維持觀望、持續監控"
+        )
+
+    return {"active": True, "breakout": breakout, "volume_confirmed": volume_confirmed}
+
+
+# ------------------------------------------------------------------
 # Step 6：左側平台支撐/壓力校正
 # 偵測「最近一段歷史裡反覆測試同一價位」的整理箱體（見 _cluster_pivot_levels），
 # 只看 platform_lookback_bars 這段最近的歷史，避免抓到很久以前、跟現在價格結構
@@ -375,7 +623,9 @@ def _cluster_pivot_levels(pivots: pd.Series, tolerance: float, min_touches: int)
 # ------------------------------------------------------------------
 def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
                                fast_slope_up: bool,
-                               reasons: List[str], caveats: List[str]) -> float:
+                               reasons: List[str], caveats: List[str],
+                               w_bottom_neckline: Optional[float] = None,
+                               m_top_neckline: Optional[float] = None) -> float:
     cfg = RULES["indicators"]["left_side_platform"]
     exclude_recent = cfg["exclude_recent_bars"]
     pivot_window = cfg["pivot_window"]
@@ -395,30 +645,35 @@ def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
         return 0.0
 
     left = left.reset_index(drop=True)
-    roll_max = left["max"].rolling(window=pivot_window, center=True).max()
-    roll_min = left["min"].rolling(window=pivot_window, center=True).min()
-    pivot_highs = left.loc[left["max"] == roll_max, "max"]
-    pivot_lows = left.loc[left["min"] == roll_min, "min"]
+    pivot_highs, pivot_lows = _find_pivot_points(left, pivot_window)
 
     close = latest["close"]
-    support_levels = _cluster_pivot_levels(pivot_lows, tolerance, min_touches)
-    resistance_levels = _cluster_pivot_levels(pivot_highs, tolerance, min_touches)
+    support_levels = [(s, "整理平台（近期多次觸碰確認）")
+                       for s in _cluster_pivot_levels(pivot_lows, tolerance, min_touches)]
+    resistance_levels = [(r, "整理平台（近期多次觸碰確認）")
+                          for r in _cluster_pivot_levels(pivot_highs, tolerance, min_touches)]
+    # 型態學輔助觸發層併入的頸線候選（見 pattern_recognition），與既有K棒
+    # 整理平台並列使用，尤其在缺乏明顯歷史平台時作為補充依據。
+    if w_bottom_neckline is not None:
+        support_levels.append((w_bottom_neckline, "W底頸線"))
+    if m_top_neckline is not None:
+        resistance_levels.append((m_top_neckline, "M頭頸線"))
 
     bias = 0.0
-    candidate_supports = [s for s in support_levels if s <= close]
+    candidate_supports = [(s, src) for s, src in support_levels if s <= close]
     if candidate_supports:
-        support = max(candidate_supports)
+        support, support_src = max(candidate_supports, key=lambda item: item[0])
         dist = (close - support) / support if support else float("inf")
         if 0 <= dist <= tolerance:
             if fast_slope_up:
                 bias += cfg["support_bonus"]
-                reasons.append(f"左側整理平台支撐約 {support:.2f}（近期多次觸碰確認）附近拉回未破，且短線指標轉向，相對安全買點")
+                reasons.append(f"左側{support_src}支撐約 {support:.2f}附近拉回未破，且短線指標轉向，相對安全買點")
             else:
-                caveats.append(f"股價貼近左側整理平台支撐約 {support:.2f}（近期多次觸碰確認），但短線指標尚未轉向，先觀察不急著進場")
+                caveats.append(f"股價貼近左側{support_src}支撐約 {support:.2f}，但短線指標尚未轉向，先觀察不急著進場")
 
-    candidate_resistance = [r for r in resistance_levels if r >= close]
+    candidate_resistance = [(r, src) for r, src in resistance_levels if r >= close]
     if candidate_resistance:
-        resistance = min(candidate_resistance)
+        resistance, resistance_src = min(candidate_resistance, key=lambda item: item[0])
         today_high = latest.get("max", close)
         dist = (resistance - today_high) / resistance if resistance else float("inf")
         near_resistance = -tolerance <= dist <= tolerance  # 含今日已觸及/接近壓力區
@@ -429,9 +684,9 @@ def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
         )
         if near_resistance and failed_to_break_prev_high:
             bias += cfg["resistance_penalty"]
-            reasons.append(f"反彈碰到左側整理平台壓力約 {resistance:.2f}（近期多次觸碰確認），且今開未過昨高，宜獲利了結不凹單")
+            reasons.append(f"反彈碰到左側{resistance_src}壓力約 {resistance:.2f}，且今開未過昨高，宜獲利了結不凹單")
         elif near_resistance:
-            caveats.append(f"股價接近左側壓力區約 {resistance:.2f}，留意反彈受阻風險")
+            caveats.append(f"股價接近左側{resistance_src}壓力區約 {resistance:.2f}，留意反彈受阻風險")
 
     return bias
 
@@ -613,8 +868,21 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     cci_exit_alert = _step5b_cci(df, tf, latest, reasons, caveats)
 
     fast_col = FAST_MA.get(tf)
-    fast_slope_up = bool(fast_col) and ma_slope(df, fast_col, lookback=slope_lookback) == "上揚"
-    platform_bias = _step6_left_side_platform(df, tf, latest, fast_slope_up, reasons, caveats)
+    fast_slope = ma_slope(df, fast_col, lookback=slope_lookback) if fast_col else "資料不足"
+    fast_slope_up = fast_slope == "上揚"
+    fast_slope_down = fast_slope == "下彎"
+
+    # ---- 型態學輔助觸發層（見 sop_rules.yaml pattern_recognition）----
+    # 只附加提醒/頸線候選，不直接產生買賣結論；三角收斂的強制觀望在下方
+    # 與其他 watch_rules 降級規則一起套用。
+    w_bottom_neckline = _detect_w_bottom(df, fast_slope_up, macd_bias, reasons)
+    m_top_neckline = _detect_m_top(df, fast_slope_down, macd_bias, reasons)
+    triangle = _detect_triangle_consolidation(df, tf, reasons, caveats)
+    triangle_force_watch = triangle["active"] and not triangle["volume_confirmed"]
+
+    platform_bias = _step6_left_side_platform(
+        df, tf, latest, fast_slope_up, reasons, caveats,
+        w_bottom_neckline=w_bottom_neckline, m_top_neckline=m_top_neckline)
     ma120_second_leg = _detect_ma120_second_leg(df, tf)
     extreme_deviation = _check_extreme_deviation(tf, latest, reasons)
     weekly_blowoff = _check_weekly_blowoff(tf, df, latest, reasons, caveats)
@@ -680,6 +948,12 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
 
     # ---- 新規則②：週線短期噴出型態，強制降級為觀望，須站回週5MA~週20MA才重新評估 ----
     if weekly_blowoff and conclusion in ("買進", "加碼"):
+        conclusion = "觀望"
+
+    # ---- 型態學輔助觸發層：三角收斂尚未帶量突破（或假突破）→ 買進/加碼強制降級觀望，
+    # 不凌駕生死線下彎/四關價破底等硬否決產生的「賣出減碼」----
+    if triangle_force_watch and watch_cfg.get("triangle_consolidation_downgrade", True) \
+            and conclusion in ("買進", "加碼"):
         conclusion = "觀望"
 
     # ---- 特殊情境：大跌測到半年線(MA120)第二隻腳未破，只在非賣出/加碼時提示 ----
