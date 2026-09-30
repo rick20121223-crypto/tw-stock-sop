@@ -42,6 +42,13 @@ def full_check(stock_id: str, market: str, api_token: str, fugle_api_key: str,
         .dropna(subset=["close"])
         .reset_index()
     )
+    # 如果現在是週一~週四執行，日線最新一筆會落在「本週還沒收完」的
+    # 週K裡，resample出來的最後一根週K其實只有1~4天的資料，拿它當「最新
+    # 一週」判讀長期SOP會失真（把還沒走完的一週當成完整一週）。只有日線
+    # 最後一筆交易日已經到週五（週一=0...週五=4）才視為這週收完，保留
+    # 最後一根週K；否則捨棄，改用上一根「已經收完」的週K當最新一週。
+    if not df_week.empty and week_src["date"].iloc[-1].weekday() < 4:
+        df_week = df_week.iloc[:-1]
     if market == "INDEX":
         # INDEX 的 volume 全是 NaN，resample後sum會變成0，容易誤導OBV，這裡改回NaN避免假訊號
         df_week["volume"] = pd.NA

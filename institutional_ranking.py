@@ -210,11 +210,21 @@ def compute_weekly_top(reference_date: date, exclude_codes: set, top_n: int = TO
     外、有代表性的個股新面孔。
     """
     totals = aggregate_week(reference_date)
-    rows = [
-        {"code": code, "market": "TW", "name": v["name"], "net": v["net"], "days": v["days"]}
-        for (code, _src), v in totals.items()
-        if code not in exclude_codes and not _is_etf(code)
-    ]
+
+    # totals是用(code, "TWSE"/"TPEX")當key，正常情況一檔股票只會出現在
+    # 其中一個市場。但股票轉板（上櫃轉上市）剛好發生在這週的邊界情況，
+    # 會讓同一個code在兩個市場來源都有紀錄，各自net可能一正一負——如果
+    # 不先按code合併就直接拆買超/賣超，同一檔可能會同時出現在買超榜跟
+    # 賣超榜（自相矛盾）。這裡先合併加總，確保每檔代碼最終只歸屬其中一邊。
+    merged: Dict[str, dict] = {}
+    for (code, _src), v in totals.items():
+        if code in exclude_codes or _is_etf(code):
+            continue
+        entry = merged.setdefault(code, {"name": v["name"], "net": 0, "days": 0})
+        entry["net"] += v["net"]
+        entry["days"] += v["days"]
+
+    rows = [{"code": code, "market": "TW", **v} for code, v in merged.items()]
 
     buy = sorted([r for r in rows if r["net"] > 0], key=lambda r: r["net"], reverse=True)[:top_n]
     sell = sorted([r for r in rows if r["net"] < 0], key=lambda r: r["net"])[:top_n]

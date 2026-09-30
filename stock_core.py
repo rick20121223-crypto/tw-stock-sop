@@ -300,7 +300,15 @@ def ma_slope(df: pd.DataFrame, ma_col: str, lookback: int = 3) -> str:
     diff = recent.iloc[-1] - recent.iloc[-1 - lookback]
     if pd.isna(diff):
         return "資料不足"
-    threshold = abs(recent.iloc[-1]) * 0.001
+    # 門檻用「近期一段視窗的平均絕對值」當基準，不要只看最新一筆的絕對值：
+    # 像OBV_MA這種會穿越零軸的累積指標，剛好走到接近零的時候，用單一筆
+    # 的絕對值當基準會讓門檻跟著萎縮到幾乎是0，一點點噪音就會被誤判成
+    # 上揚/下彎（見code-review發現的bug）。改用近期視窗的平均絕對值當
+    # 尺度，比較能代表這段序列「正常」的波動幅度，不會因為單一時間點
+    # 剛好接近零就讓門檻整個失真；對本來就穩定成長、不太可能剛好貼零的
+    # 價格均線(MA5/MA20等)，這個改法跟原本的行為幾乎沒有差異。
+    scale_window = recent.tail(max(lookback + 1, 20))
+    threshold = scale_window.abs().mean() * 0.001
     if diff > threshold:
         return "上揚"
     elif diff < -threshold:

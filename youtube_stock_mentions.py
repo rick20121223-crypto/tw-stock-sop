@@ -34,10 +34,12 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from xml.etree import ElementTree
 
 import requests
+
+from stock_core import fetch_finmind
 
 DATA_DIR = Path(__file__).parent / "data"
 WEEKLY_PICKS_FILE = DATA_DIR / "weekly_youtube_picks.json"
@@ -48,7 +50,6 @@ CHANNELS = {"雷老闆": "UCFsyPpT525Fass_s7fA2qhg"}
 
 LOOKBACK_DAYS = 14  # 近兩週的影片才算，每週一整批覆寫，太舊的會自然被換掉
 PROXIMITY_WINDOW = 20  # 股票代號跟公司名稱要在文字上相距多近才算「確認提到」
-FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 
 _RSS_NS = {
     "atom": "http://www.w3.org/2005/Atom",
@@ -59,13 +60,16 @@ _HASHTAG_CODE_RE = re.compile(r"#(\d{4})(?!\d)")
 _CODE_RE = re.compile(r"(?<!\d)\d{4}(?!\d)")
 
 
-def fetch_recent_videos(channel_id: str, lookback_days: int = LOOKBACK_DAYS) -> List[dict]:
+def fetch_recent_videos(channel_id: str, lookback_days: int = LOOKBACK_DAYS) -> Optional[List[dict]]:
     """
     用YouTube公開RSS feed（不需要API金鑰/額度）抓頻道最近發布的影片，只
     回傳lookback_days天內的。RSS通常只保留最新十幾部影片，對幾乎每天
     開播的頻道，兩週內的份量抓得到；如果頻道更新沒那麼頻繁，本來就不會
     漏，只是清單可能比較空。
-    回傳 [{video_id, title, description, published}]，抓取失敗回傳空list。
+    回傳 [{video_id, title, description, published}]；「這段期間真的沒有
+    符合的影片」回傳空list，但「根本抓不到RSS」（網路問題、頻道ID錯等）
+    回傳 None——呼叫端要能分辨這兩種情況，不然會把「抓取失敗」誤判成
+    「這週真的沒有任何提及」，把上週好不容易累積的輪替名單洗成空的。
     """
     try:
         resp = requests.get(
@@ -75,7 +79,7 @@ def fetch_recent_videos(channel_id: str, lookback_days: int = LOOKBACK_DAYS) -> 
         resp.raise_for_status()
         root = ElementTree.fromstring(resp.content)
     except Exception:
-        return []
+        return None
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     videos = []
@@ -116,26 +120,24 @@ def fetch_transcript_text(video_id: str) -> str:
         return ""
 
 
-def fetch_stock_universe(token: str = "") -> Dict[str, str]:
+def fetch_stock_universe(token: str = "") -> Optional[Dict[str, str]]:
     """
     回傳 {股票代號: 公司名稱}，涵蓋全部上市櫃（FinMind TaiwanStockInfo），
     用來判斷逐字稿裡的4位數字是不是真的股票代號、以及取得該代號的正式
-    公司名稱（不用逐字稿裡AI可能轉錄錯誤的名稱）。抓取失敗回傳空dict，
-    呼叫端會因此判斷不出任何代號合法，等於整次執行只能靠hashtag偵測。
+    公司名稱（不用逐字稿裡AI可能轉錄錯誤的名稱）。抓取失敗回傳None（不是
+    空dict）——呼叫端要能分辨「FinMind真的失敗」跟「回傳但剛好沒資料」，
+    不然token過期這種情況會讓整份輪替名單被誤判成「這週沒有任何提及」
+    而洗成空的。TaiwanStockInfo是全市場靜態清單，不需要data_id/日期區間，
+    沿用stock_core.fetch_finmind()帶空字串即可，跟其他模組共用同一套
+    FinMind呼叫/錯誤處理邏輯，不用自己重寫一份requests.get。
     """
     try:
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        resp = requests.get(FINMIND_URL, params={"dataset": "TaiwanStockInfo"},
-                             headers=headers, timeout=20)
-        resp.raise_for_status()
-        payload = resp.json()
+        df = fetch_finmind("TaiwanStockInfo", "", "", "", token)
     except Exception:
+        return None
+    if df.empty:
         return {}
-    return {
-        str(row["stock_id"]).strip(): str(row["stock_name"]).strip()
-        for row in payload.get("data", [])
-        if row.get("stock_id")
-    }
+    return dict(zip(df["stock_id"].astype(str).str.strip(), df["stock_name"].astype(str).str.strip()))
 
 
 def _hashtag_codes(description: str) -> set:
@@ -159,15 +161,20 @@ def _transcript_codes(text: str, stock_universe: Dict[str, str],
 
 
 def compute_weekly_mentions(channel_name: str, channel_id: str, exclude_codes: set,
-                             token: str = "", lookback_days: int = LOOKBACK_DAYS) -> dict:
+                             token: str = "", lookback_days: int = LOOKBACK_DAYS) -> Optional[dict]:
     """
     掃過頻道近lookback_days天的影片，回傳提到哪些（清單外的）股票、
     在哪些影片提到過。結構：
         {channel, generated_at, lookback_days,
          mentions: [{code, name, videos: [{title, date, video_id}]}]}
+    只要RSS或FinMind任一個資料源「真的抓取失敗」（不是抓到但沒資料），
+    就回傳None，呼叫端要據此保留上一份輪替名單、不要拿這次的失敗結果去
+    覆寫（否則會把上週好不容易累積的清單洗成空的）。
     """
     videos = fetch_recent_videos(channel_id, lookback_days)
     stock_universe = fetch_stock_universe(token)
+    if videos is None or stock_universe is None:
+        return None
 
     mentions: Dict[str, dict] = {}
     for v in videos:
@@ -235,8 +242,11 @@ if __name__ == "__main__":
         channel_id = CHANNELS[channel_key]
         token = os.environ.get("FINMIND_TOKEN", "")
         result = compute_weekly_mentions(channel_key, channel_id, existing_codes, token)
-        save_weekly_mentions(result)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result is None:
+            print("本次抓取失敗（RSS或FinMind連不上），保留上次的輪替名單不覆寫。")
+        else:
+            save_weekly_mentions(result)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(f"未知指令：{cmd}（可用 rotate）")
         sys.exit(1)

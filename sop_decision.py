@@ -288,7 +288,11 @@ def _step5_mtm(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str])
     if tf not in cfg.get("applicable_timeframes", ["60分"]) or pd.isna(latest.get("MTM")):
         return False
 
-    recent = df.tail(cfg["lookback_bars"])
+    # 多抓一根當shift(1)的參照基準：先tail()再shift()的話，視窗裡第一根
+    # 的「前一根」在視窗外看不到，永遠是NaN，等於視窗頭那根的死叉transition
+    # 偵測不到、實際lookback少算一根。多抓lookback_bars+1根，讓視窗內
+    # 真正要看的lookback_bars根都能拿到正確的前一根做比較。
+    recent = df.tail(cfg["lookback_bars"] + 1)
     cross_down = ((recent["MTM"] < 0) & (recent["MTM"].shift(1) >= 0)).any()
     if cross_down or latest["MTM"] < 0:
         reasons.append("MTM 翻空/死叉，60分線短線出場訊號優先示警")

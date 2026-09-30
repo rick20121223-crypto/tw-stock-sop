@@ -37,9 +37,11 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import requests
+
+from stock_core import fetch_finmind
 
 DATA_DIR = Path(__file__).parent / "data"
 WEEKLY_PICKS_FILE = DATA_DIR / "weekly_jason_picks.json"
@@ -51,19 +53,20 @@ SOURCE_LABEL = "Jason提及"
 LOOKBACK_DAYS = 14  # 近兩週，跟institutional_ranking/youtube_stock_mentions同一個節奏
 SHORT_MSG_THRESHOLD = 80  # 字元數，去URL/價格區間之後；以內＝Jason自己的短句，以上＝可能是轉貼長文
 PROXIMITY_WINDOW = 20  # 長訊息裡，股票代號跟公司名稱要在文字上相距多近才算「確認提到」
-FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 
 _URL_RE = re.compile(r"https?://\S+")
 _PRICE_RANGE_RE = re.compile(r"\d{3,6}\s*[-~至到]\s*\d{3,6}")  # 例如"1435-1460"是價格區間，不是兩檔代號
 _CODE_RE = re.compile(r"(?<!\d)\d{4}(?!\d)")
 
 
-def fetch_messages(sheet_id: str = SHEET_ID, lookback_days: int = LOOKBACK_DAYS) -> List[dict]:
+def fetch_messages(sheet_id: str = SHEET_ID, lookback_days: int = LOOKBACK_DAYS) -> Optional[List[dict]]:
     """
     用Google試算表的CSV匯出網址抓訊息（試算表要設定「知道連結的人都能
     檢視」），只回傳lookback_days天內、寄件人符合SENDER_FILTER的訊息。
-    回傳 [{time, text}]，抓取失敗（網路問題、分享設定被收回等）回傳
-    空list，不算錯誤。
+    回傳 [{time, text}]；「這段期間真的沒有符合的訊息」回傳空list，但
+    「根本抓不到試算表」（網路問題、分享設定被收回、CSV格式解析失敗等）
+    回傳 None——呼叫端要能分辨這兩種情況，不然會把「抓取失敗」誤判成
+    「這週真的沒有任何提及」，把上週好不容易累積的輪替名單洗成空的。
     """
     try:
         resp = requests.get(
@@ -72,7 +75,7 @@ def fetch_messages(sheet_id: str = SHEET_ID, lookback_days: int = LOOKBACK_DAYS)
         )
         resp.raise_for_status()
     except Exception:
-        return []
+        return None
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     messages = []
@@ -99,25 +102,23 @@ def fetch_messages(sheet_id: str = SHEET_ID, lookback_days: int = LOOKBACK_DAYS)
                 continue
             messages.append({"time": sent_at.isoformat(), "text": text})
     except Exception:
-        return []
+        return None
     return messages
 
 
-def fetch_stock_universe(token: str = "") -> Dict[str, str]:
-    """回傳 {股票代號: 公司名稱}，涵蓋全部上市櫃（FinMind TaiwanStockInfo）。"""
+def fetch_stock_universe(token: str = "") -> Optional[Dict[str, str]]:
+    """回傳 {股票代號: 公司名稱}，涵蓋全部上市櫃（FinMind TaiwanStockInfo）；
+    抓取失敗回傳None（不是空dict），理由跟fetch_messages()一樣：呼叫端要
+    分得出「失敗」跟「查到但沒資料」。TaiwanStockInfo是全市場靜態清單，
+    不需要data_id/日期區間，沿用stock_core.fetch_finmind()帶空字串即可，
+    跟其他模組共用同一套FinMind呼叫/錯誤處理邏輯。"""
     try:
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        resp = requests.get(FINMIND_URL, params={"dataset": "TaiwanStockInfo"},
-                             headers=headers, timeout=20)
-        resp.raise_for_status()
-        payload = resp.json()
+        df = fetch_finmind("TaiwanStockInfo", "", "", "", token)
     except Exception:
+        return None
+    if df.empty:
         return {}
-    return {
-        str(row["stock_id"]).strip(): str(row["stock_name"]).strip()
-        for row in payload.get("data", [])
-        if row.get("stock_id")
-    }
+    return dict(zip(df["stock_id"].astype(str).str.strip(), df["stock_name"].astype(str).str.strip()))
 
 
 def _clean_text(text: str) -> str:
@@ -155,15 +156,20 @@ def extract_codes(text: str, stock_universe: Dict[str, str],
 
 
 def compute_weekly_mentions(exclude_codes: set, token: str = "",
-                             lookback_days: int = LOOKBACK_DAYS) -> dict:
+                             lookback_days: int = LOOKBACK_DAYS) -> Optional[dict]:
     """
     掃過近lookback_days天Jason的訊息，回傳提到哪些（清單外的）股票、
     在哪些訊息提到過。結構：
         {generated_at, lookback_days,
          mentions: [{code, name, messages: [{time, text}]}]}
+    只要試算表或FinMind任一個資料源「真的抓取失敗」（不是抓到但沒資料），
+    就回傳None，呼叫端要據此保留上一份輪替名單、不要拿這次的失敗結果去
+    覆寫。
     """
     messages = fetch_messages(SHEET_ID, lookback_days)
     stock_universe = fetch_stock_universe(token)
+    if messages is None or stock_universe is None:
+        return None
 
     mentions: Dict[str, dict] = {}
     for msg in messages:
@@ -220,8 +226,11 @@ if __name__ == "__main__":
     if cmd == "rotate":
         token = os.environ.get("FINMIND_TOKEN", "")
         result = compute_weekly_mentions(existing_codes, token)
-        save_weekly_mentions(result)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result is None:
+            print("本次抓取失敗（試算表或FinMind連不上），保留上次的輪替名單不覆寫。")
+        else:
+            save_weekly_mentions(result)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(f"未知指令：{cmd}（可用 rotate）")
         sys.exit(1)
