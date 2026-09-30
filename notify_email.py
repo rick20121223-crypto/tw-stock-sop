@@ -39,7 +39,7 @@ from datetime import date, datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 
@@ -99,36 +99,42 @@ HOLDING_STYLE = {
 
 def full_watchlist():
     """
-    固定清單 + 三份每週輪替名單（法人排行／雷老闆YT提及／Jason提及），
-    一起餵給每天的判讀。回傳 [(name, code, market, source), ...]，source
-    是 "固定"、"法人排行(買超)"/"法人排行(賣超)"、"雷老闆YT提及"，或
-    "Jason提及"，用來在通知信裡標註來源，不會混進 STOCK_NAME_MAP 本身。
-    三份輪替名單都是每週一由 .github/workflows/
+    固定清單 + 三份每週輪替名單（法人排行／雷老闆YT提及／Jason提及）的
+    聯集，一起餵給每天的判讀。回傳 [(name, code, market, source), ...]。
+    三份輪替名單是各自獨立算的（互相不知道彼此選了誰），同一檔如果被
+    不只一個輪替來源同時選到，不會像以前那樣「先來的算、後面的直接
+    丟掉」，而是把來源合併顯示，例如"🔥法人排行(買超)＋Jason提及"——
+    多個獨立來源同時關注同一檔，本身就是比單一來源更值得注意的訊號，
+    用🔥標出來，不要讓這個資訊被去重邏輯默默吃掉。已經在固定清單（核心
+    持股）裡的代碼不會再被輪替名單標記（核心持股不需要這種「被關注」
+    提示）。三份輪替名單都是每週一由 .github/workflows/
     weekly_institutional_rotation.yml 重新計算、覆寫 data/ 底下對應的
     json檔（見 institutional_ranking.py、youtube_stock_mentions.py、
     jason_stock_mentions.py），這裡只負責讀取、合併、去重。
     """
     result = [(name, code, market, "固定") for name, code, market in unique_watchlist()]
-    seen_codes = {code for _, code, _market, _source in result}
+    fixed_codes = {code for _, code, _market, _source in result}
+
+    rotating: Dict[str, dict] = {}
+
+    def _merge(name, code, market, label):
+        if code in fixed_codes:
+            return
+        entry = rotating.setdefault(code, {"name": name, "market": market, "sources": []})
+        entry["sources"].append(label)
+
     for name, code, market, side in ir.rotating_watchlist():
-        if code in seen_codes:  # 理論上排行時已經排除固定清單，這裡是防呆
-            continue
-        result.append((name, code, market, f"法人排行({side})"))
-        seen_codes.add(code)
-    # 下面兩份輪替名單（YT提及/Jason提及）各自算的時候都只排除了固定
-    # 清單，沒有互相排除、也沒有排除法人排行（三份輪替名單是各自獨立
-    # 算的），這裡的seen_codes檢查才是真正擋掉「不同輪替名單剛好選到
-    # 同一檔」的地方，順序上先加進來的來源為準。
+        _merge(name, code, market, f"法人排行({side})")
     for name, code, market, source in ytm.rotating_watchlist():
-        if code in seen_codes:
-            continue
-        result.append((name, code, market, source))
-        seen_codes.add(code)
+        _merge(name, code, market, source)
     for name, code, market, source in jsm.rotating_watchlist():
-        if code in seen_codes:
-            continue
-        result.append((name, code, market, source))
-        seen_codes.add(code)
+        _merge(name, code, market, source)
+
+    for code, info in rotating.items():
+        label = "＋".join(info["sources"])
+        if len(info["sources"]) >= 2:
+            label = f"🔥{label}"
+        result.append((info["name"], code, info["market"], label))
     return result
 
 
