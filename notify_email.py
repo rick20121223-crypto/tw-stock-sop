@@ -44,6 +44,7 @@ from typing import Optional
 import pandas as pd
 
 import institutional_ranking as ir
+import youtube_stock_mentions as ytm
 from contract_liability import compute_latest_change, fetch_contract_liability_trend
 from holding_shares import compute_consecutive_signals, fetch_major_holder_trend
 from multi_timeframe_check import full_check
@@ -97,10 +98,13 @@ HOLDING_STYLE = {
 
 def full_watchlist():
     """
-    固定清單 + 本週法人排行輪替名單，一起餵給每天的判讀。回傳
-    [(name, code, market, source), ...]，source 是 "固定" 或
-    "法人排行(買超)"/"法人排行(賣超)"，用來在通知信裡標註來源，
-    不會混進 STOCK_NAME_MAP 本身。
+    固定清單 + 本週法人排行輪替名單 + 本週YT頻道提及輪替名單，一起餵給
+    每天的判讀。回傳 [(name, code, market, source), ...]，source 是
+    "固定"、"法人排行(買超)"/"法人排行(賣超)"，或"雷老闆YT提及"，用來在
+    通知信裡標註來源，不會混進 STOCK_NAME_MAP 本身。兩個輪替名單都是
+    每週一由 .github/workflows/weekly_institutional_rotation.yml 重新
+    計算、覆寫 data/ 底下對應的json檔（見 institutional_ranking.py、
+    youtube_stock_mentions.py），這裡只負責讀取、合併、去重。
     """
     result = [(name, code, market, "固定") for name, code, market in unique_watchlist()]
     seen_codes = {code for _, code, _market, _source in result}
@@ -108,6 +112,14 @@ def full_watchlist():
         if code in seen_codes:  # 理論上排行時已經排除固定清單，這裡是防呆
             continue
         result.append((name, code, market, f"法人排行({side})"))
+        seen_codes.add(code)
+    for name, code, market, source in ytm.rotating_watchlist():
+        # youtube_stock_mentions.py算的時候只排除了固定清單，沒有排除法人
+        # 排行（兩份輪替名單是各自獨立算的），這裡才是真正擋掉「兩份輪替
+        # 名單剛好都選到同一檔」的地方，以先加進來的法人排行為準。
+        if code in seen_codes:
+            continue
+        result.append((name, code, market, source))
         seen_codes.add(code)
     return result
 

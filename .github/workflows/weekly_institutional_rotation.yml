@@ -1,4 +1,4 @@
-name: 每週法人排行輪替 + 股權分散表快照
+name: 每週法人排行輪替 + YT提及輪替 + 股權分散表快照
 
 on:
   schedule:
@@ -30,13 +30,18 @@ jobs:
       - name: 計算上週三大法人買賣超前十大（買超+賣超），覆寫本週輪替名單
         run: python institutional_ranking.py rotate
 
+      - name: 掃雷老闆YT頻道近兩週提到的股票，覆寫本週輪替名單
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: python youtube_stock_mentions.py rotate
+
       - name: 存TDCC股權分散表本週快照（大股東>400張持股比例，累積歷史用）
         run: python holding_shares.py
 
-      - name: 把新的本週法人排行/股權分散表快照 commit 回 repo
+      - name: 把新的本週法人排行/YT提及輪替/股權分散表快照 commit 回 repo
         run: |
           git config user.name "sop-notify-bot"
           git config user.email "actions@github.com"
-          git add data/weekly_institutional_picks.json data/tdcc_holding_major_holder.csv
-          git diff --cached --quiet || git commit -m "更新本週法人買賣超排行、股權分散表快照（自動）"
+          git add data/weekly_institutional_picks.json data/weekly_youtube_picks.json data/tdcc_holding_major_holder.csv
+          git diff --cached --quiet || git commit -m "更新本週法人買賣超排行、YT提及輪替、股權分散表快照（自動）"
           git push

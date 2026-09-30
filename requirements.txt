@@ -4,3 +4,4 @@ requests
 pandas
 fugle-marketdata
 PyYAML
+youtube-transcript-api
