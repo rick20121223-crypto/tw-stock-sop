@@ -36,8 +36,12 @@ from datetime import date, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+from typing import Optional
+
+import pandas as pd
 
 import institutional_ranking as ir
+from holding_shares import compute_consecutive_signals, fetch_major_holder_trend
 from multi_timeframe_check import full_check
 from sop_decision import classify_final, combine_timeframes, evaluate_timeframe
 from stock_core import get_intraday_data, run_all_indicators, unique_watchlist
@@ -56,6 +60,18 @@ BUCKET_STYLE = {
 }
 
 HORIZON_LABEL = {"長期": "📅 長線留倉", "短期": "⚡ 短線進場"}
+
+# 大股東(>400張)持股比例，觸發通知的兩種條件（任一成立就寄）：
+# 1. 連續N週同方向（跟網頁圖表 pages/3_多週期整合分析.py 用同一個預設N=3）
+# 2. 單週漲跌幅度達門檻（即使前面方向不一致、湊不滿連續N週，單週劇變
+#    也可能是重要訊號，例如友達2026-09-24那週單週+5.8個百分點）
+HOLDING_CONSECUTIVE_N = 3
+HOLDING_JUMP_THRESHOLD = 2.0  # 百分點
+
+HOLDING_STYLE = {
+    "上升": {"color": "#e53935", "bg": "#fdecea", "icon": "🔺"},
+    "下降": {"color": "#43a047", "bg": "#eaf6ec", "icon": "🔻"},
+}
 
 
 def full_watchlist():
@@ -208,6 +224,8 @@ def _html_wrap(title: str, subtitle: str, body_html: str) -> str:
   <p style="margin-top:24px; color:#aaa; font-size:11px; line-height:1.6;">
     僅供輔助判讀，不構成投資建議。📅長線留倉依「週+日」整合結論，
     ⚡短線進場依「60分+5分」整合結論（僅台股個股/ETF，需要Fugle Key）。
+    🏦大戶持股依TDCC集保週資料（僅台股個股/ETF），連續{HOLDING_CONSECUTIVE_N}週同向
+    或單週變動達{HOLDING_JUMP_THRESHOLD:g}個百分點才提示。
   </p>
 </div>
 </body></html>"""
@@ -300,6 +318,39 @@ def _changes_to_html(changes: list) -> str:
     return cards
 
 
+def _holding_changes_to_plain(changes: list) -> list:
+    lines = []
+    for c in changes:
+        style = HOLDING_STYLE[c["direction"]]
+        badge = _source_badge(c.get("source"))
+        diff_text = f"（{c['diff']:+.2f}pp）" if c["diff"] is not None else ""
+        lines.append(
+            f"{style['icon']} {badge}{c['name']}（{c['code']}）：{c['percent']}%{diff_text}"
+            f"　[{c['reason']}]"
+        )
+    return lines
+
+
+def _holding_changes_to_html(changes: list) -> str:
+    cards = ""
+    for c in changes:
+        style = HOLDING_STYLE[c["direction"]]
+        badge = _source_badge(c.get("source"))
+        source_html = (
+            f'<div style="color:#999; font-size:11px; margin-top:2px;">🔄 {c["source"]}</div>'
+            if badge else ""
+        )
+        diff_text = f"（{c['diff']:+.2f}pp）" if c["diff"] is not None else ""
+        detail = (
+            f'<span style="color:{style["color"]}; font-weight:700;">{c["percent"]}%{diff_text}</span>'
+            f'　<span style="color:#999; font-size:12px;">{c["reason"]}</span>'
+            f'{source_html}'
+        )
+        cards += _card_html(style["icon"], style["color"], style["bg"],
+                             f"{c['name']}（{c['code']}）", detail)
+    return cards
+
+
 def _summarize_errors(errors: list) -> list:
     """
     把「Fugle 429 Rate limit」這種同一原因、常常一次影響一大串股票的錯誤，
@@ -319,13 +370,16 @@ def _summarize_errors(errors: list) -> list:
     return summary
 
 
-def build_change_email(today: str, long_changes: list, short_changes: list, errors: list) -> tuple:
+def build_change_email(today: str, long_changes: list, short_changes: list,
+                        holding_changes: list, errors: list) -> tuple:
     errors = _summarize_errors(errors)
     plain_lines = [f"台股 SOP 訊號異動通知（{today}）"]
     if long_changes:
         plain_lines += ["", HORIZON_LABEL["長期"] + "異動：", ""] + _changes_to_plain(long_changes)
     if short_changes:
         plain_lines += ["", HORIZON_LABEL["短期"] + "異動：", ""] + _changes_to_plain(short_changes)
+    if holding_changes:
+        plain_lines += ["", "🏦 大股東(>400張)持股動向：", ""] + _holding_changes_to_plain(holding_changes)
     if errors:
         plain_lines += ["", "⚠️ 以下股票資料取得失敗："] + errors
     plain = "\n".join(plain_lines)
@@ -333,6 +387,7 @@ def build_change_email(today: str, long_changes: list, short_changes: list, erro
     html_body = ""
     html_body += _section_html(HORIZON_LABEL["長期"] + "異動", _changes_to_html(long_changes))
     html_body += _section_html(HORIZON_LABEL["短期"] + "異動", _changes_to_html(short_changes))
+    html_body += _section_html("🏦 大股東(>400張)持股動向", _holding_changes_to_html(holding_changes))
     if errors:
         err_html = "".join(f"<div>⚠️ {e}</div>" for e in errors)
         html_body += (
@@ -355,6 +410,52 @@ def _check_long(code: str, market: str, api_token: str):
         return classify_final(result["最終建議"]), result.get("收盤"), result.get("資料日期"), None
     except Exception as exc:  # noqa: BLE001
         return None, None, None, str(exc)
+
+
+def _check_holding(code: str, market: str):
+    """
+    大股東(>400張)持股比例最新一週狀態，資料來自本地TDCC歷史檔（見
+    holding_shares.py），只有台股個股/ETF適用（TDCC只涵蓋台股集保庫存，
+    美股/大盤指數一律回傳None）。回傳 date/percent/diff/direction/signal，
+    本地歷史還沒累積到資料（檔案不存在、這檔股票剛加進觀察清單）就回傳
+    None——這是正常情況，不是錯誤，呼叫端不計入errors、不會出現在通知信
+    的失敗清單裡。
+    """
+    if market != "TW":
+        return None
+    try:
+        trend = fetch_major_holder_trend(code)
+        if trend.empty:
+            return None
+        signals = compute_consecutive_signals(trend, n=HOLDING_CONSECUTIVE_N)
+        latest = signals.iloc[-1]
+        diff = latest["diff"]
+        return {
+            "date": latest["date"].strftime("%Y-%m-%d"),
+            "percent": round(float(latest["percent"]), 2),
+            "diff": None if pd.isna(diff) else round(float(diff), 2),
+            "direction": latest["direction"],
+            "signal": latest["signal"],
+        }
+    except Exception:
+        return None  # 大戶持股是輔助訊號，資料源問題不影響主流程、不當成通知失敗
+
+
+def _holding_reason(holding: dict) -> Optional[str]:
+    """
+    判斷這週的大戶持股狀態夠不夠「值得寄信」，回傳觸發原因文字（用於
+    通知信顯示），兩個條件都不成立就回傳None（不寄）：
+        1. 連續HOLDING_CONSECUTIVE_N週同向（signal非空）
+        2. 單週漲跌幅度 >= HOLDING_JUMP_THRESHOLD 個百分點（即使方向
+           前後不一致、湊不滿連續N週，單週劇變也可能是重要訊號）
+    """
+    if holding["signal"] == "籌碼連續集中":
+        return f"連續{HOLDING_CONSECUTIVE_N}週上升"
+    if holding["signal"] == "籌碼連續分散":
+        return f"連續{HOLDING_CONSECUTIVE_N}週下降"
+    if holding["diff"] is not None and abs(holding["diff"]) >= HOLDING_JUMP_THRESHOLD:
+        return "單週劇變"  # 實際漲跌幅度另外顯示在旁邊，這裡不重複數字
+    return None
 
 
 def _check_short(code: str, market: str, fugle_api_key: str):
@@ -413,15 +514,16 @@ def main() -> None:
     is_first_run = not last_state
 
     new_state = {}
-    long_changes, short_changes = [], []
+    long_changes, short_changes, holding_changes = [], [], []
     errors = []
     log_rows = []
 
     def _check_one(name, code, market, source):
         long_bucket, long_close, long_date, long_err = _check_long(code, market, api_token)
         short_bucket, short_close, short_err = _check_short(code, market, fugle_api_key)
+        holding = _check_holding(code, market)
         return (name, code, market, source, long_bucket, long_close, long_date, long_err,
-                short_bucket, short_close, short_err)
+                short_bucket, short_close, short_err, holding)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
@@ -430,7 +532,7 @@ def main() -> None:
         ]
         for future in concurrent.futures.as_completed(futures):
             (name, code, market, source, long_bucket, long_close, long_date, long_err,
-             short_bucket, short_close, short_err) = future.result()
+             short_bucket, short_close, short_err, holding) = future.result()
 
             if long_err is not None:
                 errors.append(f"{name}（{code}）長期：{long_err}")
@@ -441,7 +543,7 @@ def main() -> None:
 
             key = f"{code}_{market}"
             new_state[key] = {"名稱": name, "代碼": code, "長期": long_bucket,
-                               "短期": short_bucket, "來源": source}
+                               "短期": short_bucket, "來源": source, "大戶": holding}
 
             log_rows.append({"name": name, "code": code, "market": market,
                               "horizon": "長期", "close": long_close, "signal": long_bucket,
@@ -458,6 +560,17 @@ def main() -> None:
                 if short_bucket is not None and prev.get("短期") and prev["短期"] != short_bucket:
                     short_changes.append({"name": name, "code": code, "market": market, "source": source,
                                            "prev": prev["短期"], "new": short_bucket, "close": short_close})
+                # 大戶持股是週頻資料，同一週內天天重跑不該重複寄信，只有
+                # 「這週的資料日期」跟上次記錄到的不一樣時才可能是新一週的
+                # 結果，才需要判斷這週夠不夠格觸發通知（見_holding_reason）。
+                prev_holding_date = (prev.get("大戶") or {}).get("date")
+                if holding and holding["date"] != prev_holding_date:
+                    reason = _holding_reason(holding)
+                    if reason:
+                        holding_changes.append({"name": name, "code": code, "market": market,
+                                                 "source": source, "percent": holding["percent"],
+                                                 "diff": holding["diff"], "direction": holding["direction"],
+                                                 "reason": reason})
 
     save_state(new_state)
     append_signal_log(today, log_rows)
@@ -470,7 +583,7 @@ def main() -> None:
         send_email(f"[台股SOP] 通知已啟用（{today}）", plain, html, gmail_address, gmail_app_password)
         return
 
-    if not long_changes and not short_changes:
+    if not long_changes and not short_changes and not holding_changes:
         print(f"{today}：無訊號變化，不寄信。")
         if errors:
             print("以下股票取得資料失敗：\n" + "\n".join(errors))
@@ -478,7 +591,8 @@ def main() -> None:
 
     long_changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
     short_changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
-    plain, html = build_change_email(today, long_changes, short_changes, errors)
+    holding_changes.sort(key=lambda c: 0 if c["direction"] == "上升" else 1)
+    plain, html = build_change_email(today, long_changes, short_changes, holding_changes, errors)
     print(plain)
     send_email(f"[台股SOP] 訊號異動通知（{today}）", plain, html, gmail_address, gmail_app_password)
 
