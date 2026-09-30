@@ -30,6 +30,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from tw_time import taiwan_today
+
 import requests
 
 TWSE_T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
@@ -277,8 +279,12 @@ if __name__ == "__main__":
         print(f"已存上櫃法人快照：{saved_path}" if saved_path else "上櫃法人快照抓取失敗或無資料，略過本次存檔")
 
     elif cmd == "rotate":
-        # 每週一執行：算「上週」的排行，覆寫輪替名單。
-        today = date.today()
+        # 每週一執行：算「上週」的排行，覆寫輪替名單。這裡一定要用
+        # taiwan_today()、不能用date.today()——排程是台灣時間週一05:30
+        # 觸發，但那個時間點UTC還是週日，date.today()會拿到週日的日期，
+        # 把「上週」整個算早一週（見tw_time.py說明、code-review發現的
+        # 真實bug）。
+        today = taiwan_today()
         this_monday = today - timedelta(days=today.weekday())
         last_monday = this_monday - timedelta(days=7)
         weekly_result = compute_weekly_top(last_monday, existing_codes)

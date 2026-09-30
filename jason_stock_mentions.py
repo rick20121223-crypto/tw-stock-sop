@@ -86,9 +86,16 @@ def fetch_messages(sheet_id: str = SHEET_ID, lookback_days: int = LOOKBACK_DAYS)
                 continue
             try:
                 sent_at = datetime.fromisoformat(row["時間"].replace("Z", "+00:00"))
-            except (KeyError, ValueError):
-                continue
-            if sent_at < cutoff:
+                # 比較放在同一個try裡：如果「時間」欄位不巧沒有時區資訊
+                # （.replace("Z", ...)沒生效，例如試算表匯出格式改變、或
+                # 手動編輯過的儲存格），fromisoformat會回傳naive
+                # datetime，拿去跟aware的cutoff比較會丟TypeError——這裡
+                # 一起接住，只跳過這一列訊息，不能讓它往外傳到下面的
+                # `except Exception: return []`，不然一列格式異常就會
+                # 讓整週的訊息全部被丟棄。
+                if sent_at < cutoff:
+                    continue
+            except (KeyError, ValueError, TypeError):
                 continue
             messages.append({"time": sent_at.isoformat(), "text": text})
     except Exception:

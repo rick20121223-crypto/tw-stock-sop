@@ -21,7 +21,6 @@
 notify_email.py共用同一組 GitHub Actions Secrets）。
 """
 
-from datetime import date
 import os
 
 from notify_email import (
@@ -37,6 +36,7 @@ from notify_email import (
     save_state,
     send_email,
 )
+from tw_time import taiwan_today
 
 
 def build_intraday_email(today: str, changes: list) -> tuple:
@@ -74,7 +74,11 @@ def main() -> None:
         print("目前沒有「短期」為買進/加碼的股票需要盤中盯，跳過。")
         return
 
-    today = str(date.today())
+    # 跟notify_email.py共用同一份signal_log.csv，日期一定要用同一套
+    # taiwan_today()，不能用date.today()（UTC），否則兩支腳本寫進log的
+    # 「今天」日期可能對不上，讓notify_email.py的_already_ran_today()
+    # 誤判、跳過整天的批次通知。
+    today = str(taiwan_today())
     changes, log_rows = [], []
     for key, v in watch_targets:
         code = v["代碼"]

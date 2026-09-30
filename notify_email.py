@@ -35,7 +35,7 @@ import csv
 import json
 import os
 import smtplib
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -50,6 +50,7 @@ from contract_liability import compute_latest_change, fetch_contract_liability_t
 from holding_shares import compute_consecutive_signals, fetch_major_holder_trend
 from multi_timeframe_check import full_check
 from sop_decision import classify_final, combine_timeframes, evaluate_timeframe
+from tw_time import taiwan_today
 from stock_core import get_intraday_data, run_all_indicators, unique_watchlist
 
 STATE_FILE = Path(__file__).parent / "data" / "last_signals.json"
@@ -79,17 +80,13 @@ HOLDING_JUMP_THRESHOLD = 2.0  # 百分點
 # 週一查一次（跟TDCC股權分散表同一天更新），而且不是「有變化才通知」，
 # 是刻意「每週都列一次目前正在上升的股票」，用來維持印象，同一批股票
 # 連續好幾週出現是預期行為，不是重複通知的bug。
-TAIWAN_TZ = timezone(timedelta(hours=8))
 
 
 def _is_monday_in_taiwan() -> bool:
-    """
-    GitHub Actions runner是UTC時間，Python的date.today()/weekday()在
-    runner上也是UTC，不能直接用來判斷「台灣時間的週一」——notify.yml的
-    cron已經把offset算過，讓「UTC週日22:00」對應「台灣週一06:00」，
-    但那只保證「什麼時候觸發」，程式內部判斷星期幾還是要自己轉時區。
-    """
-    return datetime.now(TAIWAN_TZ).weekday() == 0
+    """是否為台灣時間的週一，用共用的tw_time.taiwan_today()判斷（見
+    tw_time.py說明：GitHub Actions runner是UTC時間，不能直接用
+    date.today()/weekday()判斷台灣本地的星期幾）。"""
+    return taiwan_today().weekday() == 0
 
 HOLDING_STYLE = {
     "上升": {"color": "#e53935", "bg": "#fdecea", "icon": "🔺"},
@@ -603,16 +600,23 @@ def main() -> None:
     if not fugle_api_key:
         print("⚠️ 未設定 FUGLE_API_KEY，本次只會判讀長期（週+日），短期（60分/5分）略過。")
 
-    today = str(date.today())
+    # 這裡一定要用taiwan_today()、不能用date.today()：notify.yml的cron
+    # 刻意排在UTC前一天22:00~23:00觸發，讓GitHub Actions runner的UTC
+    # 日期比台灣日期晚一天算，如果today還是用UTC，會跟notify_intraday.py
+    # （盤中執行時UTC/台灣是同一天）寫進signal_log.csv的日期對不齊，
+    # _already_ran_today()可能誤判成「今天已經跑過」，讓整天的批次跟
+    # email通通被跳過（實際發生過的bug，見code-review）。
+    today = str(taiwan_today())
     if _already_ran_today(today):
         print(f"{today}：今天已經跑過一次了（可能是備援排程時間點重複觸發），跳過本次執行，不重複判讀、不重複寄信。")
         return
 
     # 每天執行時順便存一份上櫃法人快照（TPEx開放資料只有「最新一天」，
     # 靠每天存檔累積，才能在每週一算出「本週法人買賣超排行」，見
-    # institutional_ranking.py）。存檔失敗不影響本次通知主流程。
+    # institutional_ranking.py）。存檔失敗不影響本次通知主流程。同樣要用
+    # taiwan_today()，理由同上。
     try:
-        archived = ir.archive_tpex_snapshot(date.today())
+        archived = ir.archive_tpex_snapshot(taiwan_today())
         print(f"上櫃法人快照已存檔：{archived}" if archived else "上櫃法人快照抓取失敗或無資料，略過本次存檔")
     except Exception as exc:  # noqa: BLE001
         print(f"上櫃法人快照存檔發生例外（不影響本次通知）：{exc}")
@@ -653,8 +657,16 @@ def main() -> None:
                 continue  # 長期是核心判讀，抓不到就整檔略過
 
             key = f"{code}_{market}"
+            prev = last_state.get(key)
+            # 大戶持股抓取失敗(holding=None，通常是TDCC暫時連不上)時，沿用
+            # 上次成功記錄的基準、不要覆蓋成None——不然下次抓成功時會拿
+            # None去跟新資料比對日期，被誤判成「新的一週」而重複觸發已經
+            # 發過的持股通知（見code-review發現的bug）。這裡只影響「存進
+            # state檔的值」，下面判斷要不要觸發holding_changes通知，仍然
+            # 只看這次「真的抓到」的holding，不會因為沿用舊值就誤觸發。
+            holding_to_store = holding if holding is not None else (prev.get("大戶") if prev else None)
             new_state[key] = {"名稱": name, "代碼": code, "長期": long_bucket,
-                               "短期": short_bucket, "來源": source, "大戶": holding}
+                               "短期": short_bucket, "來源": source, "大戶": holding_to_store}
 
             log_rows.append({"name": name, "code": code, "market": market,
                               "horizon": "長期", "close": long_close, "signal": long_bucket,
@@ -663,7 +675,6 @@ def main() -> None:
                 log_rows.append({"name": name, "code": code, "market": market,
                                   "horizon": "短期", "close": short_close, "signal": short_bucket})
 
-            prev = last_state.get(key)
             if prev:
                 if prev.get("長期") and prev["長期"] != long_bucket:
                     long_changes.append({"name": name, "code": code, "market": market, "source": source,
