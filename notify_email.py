@@ -1,7 +1,10 @@
 """
 每天排程執行一次，分別判讀「長期（週+日）」和「短期（60分+5分）」兩種
 SOP結論，只要任一種「跟上次不一樣」就寄一封 Email 通知，內容分成
-📅長線留倉異動／⚡短線進場異動 兩個區塊。
+📅長線留倉異動／⚡短線進場異動／🏦大戶持股動向 三個區塊（都是「有變化才
+通知」）；另外台灣時間每週一會多附上📈合約負債上升中清單，這個不是
+「異動通知」，是刻意每週固定提醒目前哪些股票合約負債正在上升，讓使用者
+維持印象（見_is_monday_in_taiwan()、contract_liability.py）。
 
 被 .github/workflows/notify.yml 排程呼叫，不是給 Streamlit 用的。
 
@@ -32,7 +35,7 @@ import csv
 import json
 import os
 import smtplib
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -41,6 +44,7 @@ from typing import Optional
 import pandas as pd
 
 import institutional_ranking as ir
+from contract_liability import compute_latest_change, fetch_contract_liability_trend
 from holding_shares import compute_consecutive_signals, fetch_major_holder_trend
 from multi_timeframe_check import full_check
 from sop_decision import classify_final, combine_timeframes, evaluate_timeframe
@@ -67,6 +71,23 @@ HORIZON_LABEL = {"長期": "📅 長線留倉", "短期": "⚡ 短線進場"}
 #    也可能是重要訊號，例如友達2026-09-24那週單週+5.8個百分點）
 HOLDING_CONSECUTIVE_N = 3
 HOLDING_JUMP_THRESHOLD = 2.0  # 百分點
+
+# 合約負債（先收款）是季更新的財報科目，不像股價/大戶持股天天或每週都有
+# 新資料，天天查FinMind只會白白浪費額度、查到一樣的結果。只在台灣時間
+# 週一查一次（跟TDCC股權分散表同一天更新），而且不是「有變化才通知」，
+# 是刻意「每週都列一次目前正在上升的股票」，用來維持印象，同一批股票
+# 連續好幾週出現是預期行為，不是重複通知的bug。
+TAIWAN_TZ = timezone(timedelta(hours=8))
+
+
+def _is_monday_in_taiwan() -> bool:
+    """
+    GitHub Actions runner是UTC時間，Python的date.today()/weekday()在
+    runner上也是UTC，不能直接用來判斷「台灣時間的週一」——notify.yml的
+    cron已經把offset算過，讓「UTC週日22:00」對應「台灣週一06:00」，
+    但那只保證「什麼時候觸發」，程式內部判斷星期幾還是要自己轉時區。
+    """
+    return datetime.now(TAIWAN_TZ).weekday() == 0
 
 HOLDING_STYLE = {
     "上升": {"color": "#e53935", "bg": "#fdecea", "icon": "🔺"},
@@ -226,6 +247,9 @@ def _html_wrap(title: str, subtitle: str, body_html: str) -> str:
     ⚡短線進場依「60分+5分」整合結論（僅台股個股/ETF，需要Fugle Key）。
     🏦大戶持股依TDCC集保週資料（僅台股個股/ETF），連續{HOLDING_CONSECUTIVE_N}週同向
     或單週變動達{HOLDING_JUMP_THRESHOLD:g}個百分點才提示。
+    📈合約負債依FinMind季報資料（僅台股個股/ETF），每週一固定列出目前
+    「最新一季比上一季上升」的股票，同一批可能連續好幾週出現，用來維持
+    印象，不是異動通知。
   </p>
 </div>
 </body></html>"""
@@ -351,6 +375,42 @@ def _holding_changes_to_html(changes: list) -> str:
     return cards
 
 
+def _format_amount(value: float) -> str:
+    """把FinMind原始金額(元)轉成「億元」，跟財經界慣用單位一致，方便閱讀。"""
+    return f"{value / 1e8:.2f}億"
+
+
+def _contract_liability_to_plain(rows: list) -> list:
+    lines = []
+    for r in rows:
+        badge = _source_badge(r.get("source"))
+        pct = f"{r['pct_change']:+.1f}%" if r["pct_change"] is not None else ""
+        lines.append(
+            f"📈 {badge}{r['name']}（{r['code']}）：{_format_amount(r['value'])}"
+            f"（較上季 {_format_amount(r['diff'])}，{pct}）　[{r['date']}季報]"
+        )
+    return lines
+
+
+def _contract_liability_to_html(rows: list) -> str:
+    cards = ""
+    for r in rows:
+        badge = _source_badge(r.get("source"))
+        source_html = (
+            f'<div style="color:#999; font-size:11px; margin-top:2px;">🔄 {r["source"]}</div>'
+            if badge else ""
+        )
+        pct = f"{r['pct_change']:+.1f}%" if r["pct_change"] is not None else ""
+        detail = (
+            f'<span style="color:#e53935; font-weight:700;">{_format_amount(r["value"])}</span>'
+            f'　<span style="color:#999; font-size:12px;">較上季 {_format_amount(r["diff"])}'
+            f'（{pct}）・{r["date"]}季報</span>'
+            f'{source_html}'
+        )
+        cards += _card_html("📈", "#e53935", "#fdecea", f"{r['name']}（{r['code']}）", detail)
+    return cards
+
+
 def _summarize_errors(errors: list) -> list:
     """
     把「Fugle 429 Rate limit」這種同一原因、常常一次影響一大串股票的錯誤，
@@ -371,7 +431,8 @@ def _summarize_errors(errors: list) -> list:
 
 
 def build_change_email(today: str, long_changes: list, short_changes: list,
-                        holding_changes: list, errors: list) -> tuple:
+                        holding_changes: list, contract_liability_rising: list,
+                        errors: list) -> tuple:
     errors = _summarize_errors(errors)
     plain_lines = [f"台股 SOP 訊號異動通知（{today}）"]
     if long_changes:
@@ -380,6 +441,8 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
         plain_lines += ["", HORIZON_LABEL["短期"] + "異動：", ""] + _changes_to_plain(short_changes)
     if holding_changes:
         plain_lines += ["", "🏦 大股東(>400張)持股動向：", ""] + _holding_changes_to_plain(holding_changes)
+    if contract_liability_rising:
+        plain_lines += ["", "📈 合約負債上升中（每週一提醒）：", ""] + _contract_liability_to_plain(contract_liability_rising)
     if errors:
         plain_lines += ["", "⚠️ 以下股票資料取得失敗："] + errors
     plain = "\n".join(plain_lines)
@@ -388,6 +451,7 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
     html_body += _section_html(HORIZON_LABEL["長期"] + "異動", _changes_to_html(long_changes))
     html_body += _section_html(HORIZON_LABEL["短期"] + "異動", _changes_to_html(short_changes))
     html_body += _section_html("🏦 大股東(>400張)持股動向", _holding_changes_to_html(holding_changes))
+    html_body += _section_html("📈 合約負債上升中（每週一提醒）", _contract_liability_to_html(contract_liability_rising))
     if errors:
         err_html = "".join(f"<div>⚠️ {e}</div>" for e in errors)
         html_body += (
@@ -458,6 +522,23 @@ def _holding_reason(holding: dict) -> Optional[str]:
     return None
 
 
+def _check_contract_liability(code: str, market: str, api_token: str, check_today: bool):
+    """
+    合約負債最新一季 vs 上一季的變化。check_today為False（今天不是台灣
+    時間週一）時直接回傳None、完全不打FinMind API——財報季更新，天天查
+    沒意義，只在週一查一次即可（見_is_monday_in_taiwan()）。只支援台股
+    個股/ETF（FinMind財報資料的涵蓋範圍），資料源沒有這個科目、抓取
+    失敗都回傳None，呼叫端視為「不適用」，不算錯誤。
+    """
+    if not check_today or market != "TW":
+        return None
+    try:
+        trend = fetch_contract_liability_trend(code, api_token)
+        return compute_latest_change(trend)
+    except Exception:
+        return None
+
+
 def _check_short(code: str, market: str, fugle_api_key: str):
     """
     短期：60分+5分整合，跟「短線進場」頁同一套。只支援台股個股/ETF，
@@ -515,15 +596,19 @@ def main() -> None:
 
     new_state = {}
     long_changes, short_changes, holding_changes = [], [], []
+    contract_liability_rising = []
     errors = []
     log_rows = []
+    check_contract_liability_today = _is_monday_in_taiwan()
 
     def _check_one(name, code, market, source):
         long_bucket, long_close, long_date, long_err = _check_long(code, market, api_token)
         short_bucket, short_close, short_err = _check_short(code, market, fugle_api_key)
         holding = _check_holding(code, market)
+        contract_liability = _check_contract_liability(
+            code, market, api_token, check_contract_liability_today)
         return (name, code, market, source, long_bucket, long_close, long_date, long_err,
-                short_bucket, short_close, short_err, holding)
+                short_bucket, short_close, short_err, holding, contract_liability)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
@@ -532,7 +617,7 @@ def main() -> None:
         ]
         for future in concurrent.futures.as_completed(futures):
             (name, code, market, source, long_bucket, long_close, long_date, long_err,
-             short_bucket, short_close, short_err, holding) = future.result()
+             short_bucket, short_close, short_err, holding, contract_liability) = future.result()
 
             if long_err is not None:
                 errors.append(f"{name}（{code}）長期：{long_err}")
@@ -572,6 +657,16 @@ def main() -> None:
                                                  "diff": holding["diff"], "direction": holding["direction"],
                                                  "reason": reason})
 
+            # 合約負債刻意不做「跟上次比對才通知」，每週一只要目前最新一季
+            # 比上一季高，就列出來——同一批股票連續出現很多週是設計如此
+            # （見check_contract_liability_today相關註解），提醒使用者維持
+            # 印象，不是在報告「新的變化」。
+            if contract_liability and contract_liability["direction"] == "上升":
+                contract_liability_rising.append({
+                    "name": name, "code": code, "market": market, "source": source,
+                    **contract_liability,
+                })
+
     save_state(new_state)
     append_signal_log(today, log_rows)
     append_signal_changes(long_changes, "長期")
@@ -583,7 +678,7 @@ def main() -> None:
         send_email(f"[台股SOP] 通知已啟用（{today}）", plain, html, gmail_address, gmail_app_password)
         return
 
-    if not long_changes and not short_changes and not holding_changes:
+    if not long_changes and not short_changes and not holding_changes and not contract_liability_rising:
         print(f"{today}：無訊號變化，不寄信。")
         if errors:
             print("以下股票取得資料失敗：\n" + "\n".join(errors))
@@ -592,7 +687,9 @@ def main() -> None:
     long_changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
     short_changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
     holding_changes.sort(key=lambda c: 0 if c["direction"] == "上升" else 1)
-    plain, html = build_change_email(today, long_changes, short_changes, holding_changes, errors)
+    contract_liability_rising.sort(key=lambda c: c.get("pct_change") or 0, reverse=True)
+    plain, html = build_change_email(today, long_changes, short_changes, holding_changes,
+                                      contract_liability_rising, errors)
     print(plain)
     send_email(f"[台股SOP] 訊號異動通知（{today}）", plain, html, gmail_address, gmail_app_password)
 
