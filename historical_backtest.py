@@ -34,6 +34,11 @@ data/signal_log.csv「已經真的跑過、記錄下來」的訊號，歷史長�
 
 用法（在專案資料夾內執行）：
     python3 historical_backtest.py [FinMind_Token] [回測月數=6]
+
+有設定 GMAIL_ADDRESS/GMAIL_APP_PASSWORD 環境變數時，結果會寄一封摘要信
+（沿用notify_email.py同一套寄信邏輯/帳密，不需要另外的Secrets）；沒設
+就只印出結果，方便本機手動執行時直接看。被 .github/workflows/
+monthly_backtest.yml 每月排程呼叫。
 """
 import concurrent.futures
 import os
@@ -152,6 +157,71 @@ def run_historical_backtest(api_token: str, backtest_months: int = BACKTEST_MONT
     return pd.concat(all_frames, ignore_index=True)
 
 
+def _summary_to_plain(summary_df: pd.DataFrame) -> list:
+    lines = []
+    for _, row in summary_df.iterrows():
+        lines.append(
+            f"{row['結論']}：{row['樣本數(去重股票)']}檔/{row['訊號筆數']}筆　"
+            f"5日 {row['5日_平均報酬%']}%(勝率{row['5日_正報酬勝率%']}%)　"
+            f"10日 {row['10日_平均報酬%']}%(勝率{row['10日_正報酬勝率%']}%)　"
+            f"20日 {row['20日_平均報酬%']}%(勝率{row['20日_正報酬勝率%']}%)"
+        )
+    return lines
+
+
+def _summary_to_html(summary_df: pd.DataFrame) -> str:
+    from notify_email import BUCKET_STYLE
+
+    def _cell(row, n):
+        ret, wr = row[f"{n}日_平均報酬%"], row[f"{n}日_正報酬勝率%"]
+        if pd.isna(ret):
+            return "—"
+        return f'{ret:+.2f}%<br><span style="color:#999; font-size:11px;">勝率{wr}%</span>'
+
+    header = (
+        '<tr style="background:#f5f5f5; font-size:12px; color:#666;">'
+        '<th style="text-align:left; padding:6px 8px;">結論</th>'
+        '<th style="padding:6px 8px;">樣本</th>'
+        '<th style="padding:6px 8px;">5日</th>'
+        '<th style="padding:6px 8px;">10日</th>'
+        '<th style="padding:6px 8px;">20日</th>'
+        '</tr>'
+    )
+    rows_html = ""
+    for _, row in summary_df.iterrows():
+        style = BUCKET_STYLE.get(row["結論"], {"color": "#333"})
+        rows_html += (
+            '<tr style="border-top:1px solid #eee;">'
+            f'<td style="padding:8px; font-weight:700; color:{style["color"]};">{row["結論"]}</td>'
+            f'<td style="padding:8px; text-align:center; color:#999; font-size:12px;">'
+            f'{row["樣本數(去重股票)"]}檔/{row["訊號筆數"]}筆</td>'
+            f'<td style="padding:8px; text-align:center;">{_cell(row, 5)}</td>'
+            f'<td style="padding:8px; text-align:center;">{_cell(row, 10)}</td>'
+            f'<td style="padding:8px; text-align:center;">{_cell(row, 20)}</td>'
+            '</tr>'
+        )
+    return f'<table style="width:100%; border-collapse:collapse; font-size:13px;">{header}{rows_html}</table>'
+
+
+def build_backtest_email(today: str, months: int, summary_df: pd.DataFrame) -> tuple:
+    from notify_email import _html_wrap
+
+    caveat = ("提醒：這是對「現在的核心持股」往回回放，有存活者偏誤——這批股票是"
+              "現在已經持有、多半已經賺錢的核心持股，不是當時隨機抽樣的股票池，"
+              "所以不能當成「SOP整體選股準不準」的結論，只能看這批股票的訊號"
+              "有沒有鑑別力（加碼有沒有贏賣出減碼）。")
+
+    plain_lines = [f"核心持股長期SOP歷史回放回測（{today}，回溯{months}個月）", ""]
+    plain_lines += _summary_to_plain(summary_df)
+    plain_lines += ["", caveat]
+    plain = "\n".join(plain_lines)
+
+    html_body = _summary_to_html(summary_df)
+    html_body += f'<p style="margin-top:16px; color:#999; font-size:12px;">{caveat}</p>'
+    html = _html_wrap(f"核心持股長期SOP歷史回測（回溯{months}個月）", today, html_body)
+    return plain, html
+
+
 if __name__ == "__main__":
     token_arg = sys.argv[1] if len(sys.argv) > 1 else ""
     api_token = token_arg or os.environ.get("FINMIND_TOKEN", "")
@@ -172,3 +242,15 @@ if __name__ == "__main__":
     print("\n=== 依結論分組的未來N個交易日報酬統計（歷史回放，核心持股） ===")
     print("（買進/加碼想看到正報酬才算對；賣出減碼想看到負報酬才算對，方向要自己對照看）")
     print(summary_df.to_string(index=False))
+
+    gmail_address = os.environ.get("GMAIL_ADDRESS", "")
+    gmail_app_password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if gmail_address and gmail_app_password:
+        from notify_email import send_email
+        today_str = date.today().isoformat()
+        plain, html = build_backtest_email(today_str, months_arg, summary_df)
+        send_email(f"[台股SOP] 核心持股歷史回測（回溯{months_arg}個月）", plain, html,
+                   gmail_address, gmail_app_password)
+        print("\n已寄出回測摘要信。")
+    else:
+        print("\n未設定GMAIL_ADDRESS/GMAIL_APP_PASSWORD，只印出結果，不寄信。")

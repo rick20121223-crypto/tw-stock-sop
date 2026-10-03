@@ -1,0 +1,31 @@
+name: 每月核心持股歷史回測
+
+on:
+  schedule:
+    # 台灣時間每月2日早上06:00 = UTC每月1日22:00。選第2天不選1日當天，
+    # 是為了讓前一個月的交易日資料已經完整收盤、不會抓到月初還沒走完
+    # 的那幾天。
+    - cron: "0 22 1 * *"
+  workflow_dispatch: {}   # 允許在 GitHub Actions 頁面手動觸發，方便測試
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 回放核心持股近6個月的長期SOP訊號，並寄出摘要信
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python historical_backtest.py
