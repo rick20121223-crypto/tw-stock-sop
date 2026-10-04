@@ -1,5 +1,5 @@
 """
-把「法人買賣超排行」＋「元大投顧（等）重點股」這兩份候選觀察名單，自動跑一輪
+把「法人買賣超排行」＋「投顧報告（元大投顧、宏遠投顧...等）重點股」這兩份候選觀察名單，自動跑一輪
 multi_timeframe_check的SOP判讀，依「買進/加碼優先」排序輸出，省去一檔一檔
 手動查的功夫。
 
@@ -22,14 +22,14 @@ import sys
 from typing import Dict, List, Tuple
 
 import institutional_ranking as ir
-import yuanta_stock_mentions as ysm
+import brokerage_stock_mentions as bsm
 from multi_timeframe_check import full_check
 from sop_decision import classify_final
 
 
 def candidates() -> List[Tuple[str, str, str, str]]:
     """
-    合併法人買賣超排行＋元大投顧重點股兩份輪替名單，回傳
+    合併法人買賣超排行＋投顧報告重點股兩份輪替名單，回傳
     [(name, code, market, source), ...]。同一檔被兩個來源同時選到時，來源
     標籤合併並加🔥前綴（跟 notify_email.full_watchlist() 同一套邏輯——多個
     獨立來源同時關注，本身就比單一來源更值得注意）。
@@ -42,7 +42,7 @@ def candidates() -> List[Tuple[str, str, str, str]]:
 
     for name, code, market, side in ir.rotating_watchlist():
         _merge(name, code, market, f"法人排行({side})")
-    for name, code, market, source in ysm.rotating_watchlist():
+    for name, code, market, source in bsm.rotating_watchlist():
         _merge(name, code, market, source)
 
     result = []
@@ -91,7 +91,7 @@ def run(api_token: str, fugle_api_key: str) -> List[dict]:
 
 def print_rows(rows: List[dict]) -> None:
     if not rows:
-        print("目前沒有候選名單（法人排行／元大投顧重點股皆是空的，可能還沒跑過對應的 rotate/add 指令）。")
+        print("目前沒有候選名單（法人排行／投顧重點股皆是空的，可能還沒跑過對應的 rotate/add 指令）。")
         return
     for row in rows:
         if row["error"] is not None:
