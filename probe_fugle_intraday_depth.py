@@ -7,21 +7,22 @@ _INTRADAY_LOOKBACK_DAYS={"60":120,"5":20}只是夠用於「即時盤後檢查」
 用法（需要FUGLE_API_KEY，在你自己能連到Fugle的環境執行）：
     python3 probe_fugle_intraday_depth.py <FUGLE_API_KEY> [股票代號=2454]
 
-會依序嘗試60分線 lookback_days = 90, 180, 365, 730 天，和5分線
-lookback_days = 30, 60, 90 天（5分資料量大很多，不往更長的測，避免一次
-撞到回應過大或rate limit），印出每次「實際回傳的K棒數量」「最早日期」
-「最晚日期」——如果某個lookback_days回傳的最早日期明顯比「今天-
-lookback_days」晚很多（代表資料被截斷了），那就是真正的深度上限；如果
-最早日期跟請求的起始日期幾乎吻合，代表這個長度還沒碰到上限，可以再往
-更長測。
+第一輪測試（90/180/365/730天）已經發現：Fugle的歷史分K端點對「單次
+請求」的日期區間有硬性限制（from~to必須小於365天，超過會直接回400錯誤
+"Date range must be less than one year"），跟資料本身實際保留多久是
+兩件事——180天內60分線、90天內5分線都完全沒有被截斷的跡象。這一輪改
+測300/350/360天（60分）跟150/200/250/300天（5分），刻意避開365天那條
+API硬線，才能看出資料本身真正存多深。印出的「最早日期」如果跟「今天-
+lookback_days」幾乎吻合，代表這個長度還沒碰到資料本身的上限；如果卡在
+某個更早的日期不再往前，那天就是資料實際保留的起點。
 """
 import sys
 import time
 
 from stock_core import get_intraday_data
 
-TEST_60MIN_LOOKBACKS = [90, 180, 365, 730]
-TEST_5MIN_LOOKBACKS = [30, 60, 90]
+TEST_60MIN_LOOKBACKS = [300, 350, 360]
+TEST_5MIN_LOOKBACKS = [150, 200, 250, 300]
 
 
 def probe(symbol: str, timeframe: str, lookback_days: int, api_key: str) -> None:
