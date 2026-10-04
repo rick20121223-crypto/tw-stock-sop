@@ -163,6 +163,69 @@ def _step2_weekly_pullback_zone(df: pd.DataFrame, tf: str, latest: pd.Series,
 
 
 # ------------------------------------------------------------------
+# Step 2 附則（僅週線適用）：週KD金叉＋站穩週5MA/週35MA(上揚)，但丁老師
+# 原始教材沒有這條，是2026-10用24個月、13檔核心持股歷史回測驗證後新增
+# （10日後正報酬比例65.5%，優於無條件基準53.9%）。KD已由stock_core.
+# calc_kd()對所有週期計算，這裡不用另外算。
+# ------------------------------------------------------------------
+def _step2_weekly_kd_golden_cross(df: pd.DataFrame, tf: str, latest: pd.Series,
+                                   reasons: List[str]) -> float:
+    if tf != "週" or len(df) < 2:
+        return 0.0
+
+    cfg = RULES["indicators"]["weekly_kd_golden_cross"]
+    k, d = latest.get("K"), latest.get("D")
+    prev = df.iloc[-2]
+    prev_k, prev_d = prev.get("K"), prev.get("D")
+    if pd.isna(k) or pd.isna(d) or pd.isna(prev_k) or pd.isna(prev_d):
+        return 0.0
+    golden_cross = prev_k <= prev_d and k > d
+    if not golden_cross:
+        return 0.0
+
+    ma5, ma35, close = latest.get("MA5"), latest.get("MA35"), latest.get("close")
+    if pd.isna(ma5) or pd.isna(ma35) or pd.isna(close):
+        return 0.0
+    slope_lookback = RULES["indicators"]["ma_slope"]["lookback"]
+    above_both = close >= ma5 and close >= ma35
+    ma35_rising = ma_slope(df, "MA35", lookback=slope_lookback) == "上揚"
+
+    if above_both and ma35_rising:
+        reasons.append("週KD金叉，且同時站穩週5MA/週35MA(上揚)，中長線買點訊號增強")
+        return cfg["bonus"]
+    return 0.0
+
+
+# ------------------------------------------------------------------
+# Step 2 附則（僅60分線適用）：60分MA20+MA120(烏龜線)+MA240三線同步站上
+# 且上揚，但丁老師原始教材沒有這條，是2026-10用lookback 350天、13檔核心
+# 持股歷史回測驗證後新增（5根K棒後正報酬比例53.1%，優於無條件基準
+# 50.3%）。MA120只為此規則額外計入TIMEFRAME_MA_PERIODS["60分"]，FAST_MA/
+# KEY_MA仍維持MA20/MA240不變。
+# ------------------------------------------------------------------
+def _step2_60min_turtle_confirm(df: pd.DataFrame, tf: str, latest: pd.Series,
+                                 reasons: List[str]) -> float:
+    if tf != "60分":
+        return 0.0
+
+    cfg = RULES["indicators"]["min60_turtle_confirm"]
+    close = latest.get("close")
+    ma20, ma120, ma240 = latest.get("MA20"), latest.get("MA120"), latest.get("MA240")
+    if pd.isna(close) or pd.isna(ma20) or pd.isna(ma120) or pd.isna(ma240):
+        return 0.0
+
+    slope_lookback = RULES["indicators"]["ma_slope"]["lookback"]
+    fast_up = close >= ma20 and ma_slope(df, "MA20", lookback=slope_lookback) == "上揚"
+    turtle_up = close >= ma120 and ma_slope(df, "MA120", lookback=slope_lookback) == "上揚"
+    key_up = close >= ma240 and ma_slope(df, "MA240", lookback=slope_lookback) == "上揚"
+
+    if fast_up and turtle_up and key_up:
+        reasons.append("60分MA20+MA120(烏龜線)+MA240三線同步站上且上揚，增強買進訊號")
+        return cfg["bonus"]
+    return 0.0
+
+
+# ------------------------------------------------------------------
 # 簡化版頂背離偵測：近期股價創高，但 MACD 柱狀圖高點未同步創高。
 # 這是簡化偵測，非教科書式嚴謹型態辨識，僅供參考。
 # ------------------------------------------------------------------
@@ -895,6 +958,8 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     four_key_bias = _step1_four_key_prices(tf, latest, reasons, caveats)
     ma_bias, key_ma_down_veto = _step2_ma(df, tf, latest, reasons, caveats)
     ma_bias += _step2_weekly_pullback_zone(df, tf, latest, reasons)
+    ma_bias += _step2_weekly_kd_golden_cross(df, tf, latest, reasons)
+    ma_bias += _step2_60min_turtle_confirm(df, tf, latest, reasons)
     macd_bias, dead_cross, macd_bearish_divergence = _step3_macd(df, latest, reasons, caveats)
     volume_bias, volume_bear_confirm = _step4_volume(
         df, tf, latest, macd_bearish_divergence, reasons, caveats)

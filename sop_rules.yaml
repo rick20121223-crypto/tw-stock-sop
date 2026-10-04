@@ -1,3 +1,6 @@
+# updated 2026-10-04：新增週KD金叉+週5/35MA(weekly_kd_golden_cross)、60分MA20+
+#   MA120烏龜線+MA240三線確認(min60_turtle_confirm)兩條新規則，皆為歷史回測
+#   驗證後新增，非但丁老師原始教材條文（見兩區塊內註解與對應test_*.py）
 # updated 2026-09-28：新增 pattern_recognition 型態學輔助觸發層（W底/M頭/三角收斂），
 #   純輔助觸發與Step6支撐壓力補充來源，不單獨產生買賣結論，見該區塊註解
 # updated 2026-09-18：Step6左側平台改成偵測「多次觸碰的整理箱體」，不再只抄
@@ -16,7 +19,7 @@
 #   sell_rules   ：判定「賣出減碼」的條件
 #   special_notes：不改變結論、只附加提示的特殊情境
 
-version: "1.2"
+version: "1.3"
 
 # ==================================================================
 # 共用指標參數
@@ -41,6 +44,19 @@ indicators:
     min_bars: 4                # 至少要有4根K棒才判斷「止跌打底」
     recent_low_window: 4       # 檢查最近幾根K棒的低點是否不再創新低
     bonus: 1.0                 # 週線回檔落於週5MA~週20MA區間且止跌打底的加分
+
+  weekly_kd_golden_cross:
+    # 但丁老師原始教材沒有這條，是2026-10用24個月、13檔核心持股歷史回測
+    # 驗證後新增：週KD金叉+站穩週5MA/週35MA(上揚)，10日後正報酬比例65.5%，
+    # 優於無條件基準53.9%（見test_weekly_kd_and_daily_ma35_buy.py）。
+    bonus: 1
+
+  min60_turtle_confirm:
+    # 但丁老師原始教材沒有這條，是2026-10用lookback 350天、13檔核心持股
+    # 歷史回測驗證後新增：60分MA20+MA120(烏龜線)+MA240三線同步站上且上揚，
+    # 5根K棒後正報酬比例53.1%，優於無條件基準50.3%（見
+    # test_intraday_signals_buy.py）。
+    bonus: 1
 
   macd:
     divergence_lookback: 20              # 頂背離偵測回看根數
