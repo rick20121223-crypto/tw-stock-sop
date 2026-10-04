@@ -40,7 +40,7 @@ from tw_time import taiwan_today
 
 
 def build_intraday_email(today: str, changes: list) -> tuple:
-    plain_lines = [f"台股 SOP 盤中訊號異動（{today}）", "", HORIZON_LABEL["短期"] + "異動：", ""]
+    plain_lines = [f"但丁股票SOP 盤中訊號異動（{today}）", "", HORIZON_LABEL["短期"] + "異動：", ""]
     plain_lines += _changes_to_plain(changes)
     plain = "\n".join(plain_lines)
 
@@ -48,7 +48,7 @@ def build_intraday_email(today: str, changes: list) -> tuple:
         f'<h3 style="margin:0 0 8px; color:#444; font-size:15px;">{HORIZON_LABEL["短期"]}異動</h3>'
         + _changes_to_html(changes)
     )
-    html = _html_wrap("台股 SOP 盤中訊號異動", today, html_body)
+    html = _html_wrap("但丁股票SOP 盤中訊號異動", today, html_body)
     return plain, html
 
 
@@ -106,7 +106,7 @@ def main() -> None:
     changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
     plain, html = build_intraday_email(today, changes)
     print(plain)
-    send_email(f"[台股SOP] 盤中訊號異動（{today}）", plain, html, gmail_address, gmail_app_password)
+    send_email(f"[但丁股票SOP] 盤中訊號異動（{today}）", plain, html, gmail_address, gmail_app_password)
 
 
 if __name__ == "__main__":

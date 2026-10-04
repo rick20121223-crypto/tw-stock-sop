@@ -304,7 +304,7 @@ def build_first_run_email(today: str, new_state: dict) -> tuple:
         key=lambda v: (BUCKET_ORDER.get(v.get("長期"), 9), BUCKET_ORDER.get(v.get("短期"), 9)),
     )
 
-    plain_lines = [f"台股 SOP 通知已啟用（{today}）", "", "今天的起始分類（長期／短期）：", ""]
+    plain_lines = [f"但丁股票SOP 通知已啟用（{today}）", "", "今天的起始分類（長期／短期）：", ""]
     for v in rows:
         short = v.get("短期") or "—"
         badge = _source_badge(v.get("來源"))
@@ -327,7 +327,7 @@ def build_first_run_email(today: str, new_state: dict) -> tuple:
         '<p style="color:#888; font-size:13px; margin-top:16px;">'
         "之後只有分類「變化」時才會再寄信通知你。</p>"
     )
-    html = _html_wrap("台股 SOP 通知已啟用", today, html_body)
+    html = _html_wrap("但丁股票SOP 通知已啟用", today, html_body)
     return plain, html
 
 
@@ -457,7 +457,7 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
                         holding_changes: list, contract_liability_rising: list,
                         errors: list) -> tuple:
     errors = _summarize_errors(errors)
-    plain_lines = [f"台股 SOP 訊號異動通知（{today}）"]
+    plain_lines = [f"但丁股票SOP 訊號異動通知（{today}）"]
     if long_changes:
         plain_lines += ["", HORIZON_LABEL["長期"] + "異動：", ""] + _changes_to_plain(long_changes)
     if short_changes:
@@ -481,7 +481,7 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
             '<div style="margin-top:16px; padding:10px 14px; background:#fff8e1; '
             'border-radius:4px; color:#8a6d00; font-size:12px;">' + err_html + "</div>"
         )
-    html = _html_wrap("台股 SOP 訊號異動通知", today, html_body)
+    html = _html_wrap("但丁股票SOP 訊號異動通知", today, html_body)
     return plain, html
 
 
@@ -712,7 +712,7 @@ def main() -> None:
     if is_first_run:
         plain, html = build_first_run_email(today, new_state)
         print(plain)
-        send_email(f"[台股SOP] 通知已啟用（{today}）", plain, html, gmail_address, gmail_app_password)
+        send_email(f"[但丁股票SOP] 通知已啟用（{today}）", plain, html, gmail_address, gmail_app_password)
         return
 
     if not long_changes and not short_changes and not holding_changes and not contract_liability_rising:
@@ -728,7 +728,7 @@ def main() -> None:
     plain, html = build_change_email(today, long_changes, short_changes, holding_changes,
                                       contract_liability_rising, errors)
     print(plain)
-    send_email(f"[台股SOP] 訊號異動通知（{today}）", plain, html, gmail_address, gmail_app_password)
+    send_email(f"[但丁股票SOP] 訊號異動通知（{today}）", plain, html, gmail_address, gmail_app_password)
 
 
 if __name__ == "__main__":

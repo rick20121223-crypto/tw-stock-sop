@@ -249,7 +249,7 @@ if __name__ == "__main__":
         from notify_email import send_email
         today_str = date.today().isoformat()
         plain, html = build_backtest_email(today_str, months_arg, summary_df)
-        send_email(f"[台股SOP] 核心持股歷史回測（回溯{months_arg}個月）", plain, html,
+        send_email(f"[但丁股票SOP] 核心持股歷史回測（回溯{months_arg}個月）", plain, html,
                    gmail_address, gmail_app_password)
         print("\n已寄出回測摘要信。")
     else:
