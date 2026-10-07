@@ -351,14 +351,28 @@ def _step5_mtm(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str])
     if tf not in cfg.get("applicable_timeframes", ["60分"]) or pd.isna(latest.get("MTM")):
         return False
 
-    # 多抓一根當shift(1)的參照基準：先tail()再shift()的話，視窗裡第一根
-    # 的「前一根」在視窗外看不到，永遠是NaN，等於視窗頭那根的死叉transition
-    # 偵測不到、實際lookback少算一根。多抓lookback_bars+1根，讓視窗內
-    # 真正要看的lookback_bars根都能拿到正確的前一根做比較。
-    recent = df.tail(cfg["lookback_bars"] + 1)
-    cross_down = ((recent["MTM"] < 0) & (recent["MTM"].shift(1) >= 0)).any()
-    if cross_down or latest["MTM"] < 0:
-        reasons.append("MTM 翻空/死叉，60分線短線出場訊號優先示警")
+    confirm_bars = cfg.get("confirm_bars", 1)
+    if confirm_bars <= 1:
+        # 舊版行為（預設）：單根K棒翻負，或近lookback_bars根內曾死叉，就觸發。
+        # 多抓一根當shift(1)的參照基準：先tail()再shift()的話，視窗裡第一根
+        # 的「前一根」在視窗外看不到，永遠是NaN，等於視窗頭那根的死叉transition
+        # 偵測不到、實際lookback少算一根。多抓lookback_bars+1根，讓視窗內
+        # 真正要看的lookback_bars根都能拿到正確的前一根做比較。
+        recent = df.tail(cfg["lookback_bars"] + 1)
+        cross_down = ((recent["MTM"] < 0) & (recent["MTM"].shift(1) >= 0)).any()
+        if cross_down or latest["MTM"] < 0:
+            reasons.append("MTM 翻空/死叉，60分線短線出場訊號優先示警")
+            return True
+        return False
+
+    # confirm_bars>1：改用「連續N根都翻負」才算確認翻空，取代舊版的單根
+    # 即觸發邏輯——2026-10-07觀察到短期訊號反轉比例飆高（近期單週近7成
+    # 異動幾天內又反轉回去），多半是MTM貼著零軸上下小幅震盪被單根雜訊
+    # 放大成訊號，故加這個緩衝帶選項；confirm_bars=1時完全不影響舊行為。
+    last_n = df["MTM"].tail(confirm_bars)
+    confirmed_down = len(last_n) == confirm_bars and (last_n < 0).all()
+    if confirmed_down:
+        reasons.append(f"MTM 連續{confirm_bars}根翻空，60分線短線出場訊號優先示警（已排除單根雜訊）")
         return True
     return False
 
@@ -379,6 +393,7 @@ def _step5b_cci(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str]
     signal_threshold = cfg["signal_threshold"]
     extreme_threshold = cfg["extreme_threshold"]
     latest_cci = latest["CCI"]
+    confirm_bars = cfg.get("confirm_bars", 1)
 
     if abs(latest_cci) > extreme_threshold:
         direction = "超買" if latest_cci > 0 else "超賣"
@@ -392,8 +407,23 @@ def _step5b_cci(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str]
     if prior.empty:
         return False
 
-    bear_foldback = (prior >= signal_threshold).any() and latest_cci < signal_threshold
-    bull_foldback = (prior <= -signal_threshold).any() and latest_cci > -signal_threshold
+    if confirm_bars <= 1:
+        # 舊版行為（預設）：曾經站上/跌破門檻，這一根折返就立刻觸發
+        bear_foldback = (prior >= signal_threshold).any() and latest_cci < signal_threshold
+        bull_foldback = (prior <= -signal_threshold).any() and latest_cci > -signal_threshold
+    else:
+        # confirm_bars>1：改成「連續N根都已折返站穩」才算確認，取代單根
+        # 即觸發——2026-10-08短期訊號雜訊反轉事件診斷（diagnose_short_term_
+        # whipsaw.py）發現CCI示警出現在30.9%的雜訊反轉裡，僅次於Step6左側
+        # 平台，推測是CCI貼著±100來回折返被單根雜訊放大；confirm_bars=1
+        # 時完全不影響舊行為。
+        was_above = (prior >= signal_threshold).any()
+        was_below = (prior <= -signal_threshold).any()
+        last_n = df["CCI"].tail(confirm_bars)
+        confirmed_below = len(last_n) == confirm_bars and (last_n < signal_threshold).all()
+        confirmed_above = len(last_n) == confirm_bars and (last_n > -signal_threshold).all()
+        bear_foldback = was_above and confirmed_below
+        bull_foldback = was_below and confirmed_above
 
     if bear_foldback:
         reasons.append(
@@ -756,12 +786,29 @@ def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
     if m_top_neckline is not None:
         resistance_levels.append((m_top_neckline, "M頭頸線"))
 
+    confirm_bars = cfg.get("confirm_bars", 1)
+
     bias = 0.0
     candidate_supports = [(s, src) for s, src in support_levels if s <= close]
     if candidate_supports:
         support, support_src = max(candidate_supports, key=lambda item: item[0])
-        dist = (close - support) / support if support else float("inf")
-        if 0 <= dist <= tolerance:
+        if confirm_bars <= 1:
+            dist = (close - support) / support if support else float("inf")
+            near_support = 0 <= dist <= tolerance
+        else:
+            # 連續confirm_bars根收盤價都落在容忍帶內，才算「真的貼著支撐
+            # 整理」，不是單根雜訊越過帶子邊緣——2026-10-08短期雜訊反轉
+            # 診斷（diagnose_short_term_whipsaw.py）發現Step6出現在49.7%
+            # 的雜訊反轉事件中，是目前最大宗來源：股價貼著支撐/壓力整理
+            # 時，單根K棒的微小波動就會讓dist在容忍帶邊緣反覆跨進跨出，
+            # 直接帶動bias/score來回翻動。confirm_bars=1時完全不影響舊行為。
+            recent_closes = df["close"].tail(confirm_bars)
+            if support and len(recent_closes) == confirm_bars:
+                dists = (recent_closes - support) / support
+                near_support = bool(((dists >= 0) & (dists <= tolerance)).all())
+            else:
+                near_support = False
+        if near_support:
             if fast_slope_up:
                 bias += cfg["support_bonus"]
                 reasons.append(f"左側{support_src}支撐約 {support:.2f}附近拉回未破，且短線指標轉向，相對安全買點")

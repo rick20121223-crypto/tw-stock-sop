@@ -79,6 +79,11 @@ indicators:
   mtm:
     applicable_timeframes: ["60分"]
     lookback_bars: 3    # 檢查近幾根K棒是否死叉翻空
+    # 2026-10-07新增：短期訊號反轉比例近期偏高（單週近7成異動幾天內又
+    # 反轉回去），懷疑是MTM貼著零軸雜訊造成。confirm_bars=1（預設）＝
+    # 舊行為不變；>1 時改成「連續N根都翻負」才觸發翻空示警，見
+    # test_mtm_confirm_bars_whipsaw.py 的回測結果再決定要不要調大。
+    confirm_bars: 1
 
   cci:
     # 第三代領先指標，與 MTM 並列參考，不強制優先順序（見 watch_rules.cci_exit_alert_downgrade）。
@@ -87,6 +92,14 @@ indicators:
     signal_threshold: 100      # 突破後折返穿越 ±100 視為轉折訊號
     extreme_threshold: 200     # 突破 ±200 視為極端訊號，需特別關注（僅提示，不變更結論）
     lookback_bars: 3           # 檢查近幾根K棒是否曾站上+100或跌破-100後折返（比照MTM的lookback_bars）
+    # 2026-10-08：CCI示警出現在30.9%的短期雜訊反轉事件中（僅次於Step6
+    # 左側平台），懷疑是貼著±100來回折返被單根雜訊放大。用
+    # test_short_term_whipsaw_fix_compare.py回測13檔60分K：confirm_bars=2
+    # 沒有改善（183次雜訊反轉，比預設1還差），confirm_bars=3才真的有效
+    # （132次，降26%），且4/8/16根K棒後的保護力(下跌比例)三者皆相近，
+    # 沒有因此變差，故正式採用3；confirm_bars=1時維持舊行為，供需要時
+    # 退回比較。
+    confirm_bars: 3
     role: "secondary"          # 二線輔助指標，與 MTM 並列參考，不強制優先順序
     note: "預設參考值，非但丁老師原始教材明確數字，可依實戰經驗調整"
 
@@ -98,6 +111,13 @@ indicators:
                               # 兩個擺動點是不是「同一個平台價位」（見下方叢集判斷）
     support_bonus: 1         # 測到左側支撐未破 + 快均線轉向 → 加分
     resistance_penalty: -1   # 碰左側壓力 + 今開未過昨高 → 扣分
+    # 2026-10-08：Step6出現在49.7%的短期雜訊反轉事件中，是目前最大宗
+    # 來源——股價貼著支撐整理時，單根K棒微小波動就讓dist在容忍帶邊緣
+    # 反覆跨進跨出。用test_short_term_whipsaw_fix_compare.py回測13檔
+    # 60分K：confirm_bars=2沒有改善，confirm_bars=3才真的有效（雜訊
+    # 反轉總數179→132，降26%），且降級訊號後續的保護力沒有因此變差，
+    # 故正式採用3；confirm_bars=1時維持舊行為，供需要時退回比較。
+    confirm_bars: 3
     platform_lookback_bars:  # 平台偵測只看「最近一段」歷史，避免抓到很久以前、
                               # 跟目前價格結構毫無關聯的孤立擺動點（真正的整理平台
                               # 是「最近這一段時間反覆測試」，不是「史上離現價最近」）
