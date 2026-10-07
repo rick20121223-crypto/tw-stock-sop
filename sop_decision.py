@@ -992,17 +992,43 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     # ---- 判定「賣出減碼」：符合任一條件即可（見 SOP 規則）----
     four_key_broken = tf == "日" and four_key_bias == -1
     dead_cross_confirmed = dead_cross and ma_bias < 0
+    # 2026-10-07：volume_bear_confirm（MACD頂背離+OBV同步走壞）原本不管均線
+    # 方向，單獨就能跳過均線否決硬判賣出減碼——跟dead_cross_confirmed要求
+    # ma_bias<0才算確認的作法不一致，也跟但丁老師「均線斜率具最終裁決權，
+    # 一代指標未破壞不可單憑二三代指標背離盲目全面砍單」的原則衝突。
+    # 2026-10-05金像電(2368)案例：10/2收盤觸發此規則判賣出減碼，均線(MA35)
+    # 當時仍上揚且站上，隔一個交易日卻在PCB族群消息面帶動下鎖漲停，促成
+    # 用test_volume_bear_confirm_ma_gate(_wide).py回測驗證（60檔/36個月/
+    # 138筆事件）：均線仍偏多時單獨出現這個訊號，20日後續跌45.3%、上漲
+    # 54.7%（接近銅板），但兩端都有肥尾（最差-47%、最佳+75.4%）——不是
+    # 「大多數是假警報可以忽略」，也不是「真的要全賣」，是分佈兩端都很
+    # 極端，所以改成「分級減碼」而非全有全無：均線同步偏空才算全賣的
+    # 確認；均線仍偏多時，降級為「賣出減碼」但在caveats註明建議只先減碼
+    # 50%、保留一半觀察（conclusion仍是「賣出減碼」四字不變，只是在caveats
+    # 加註細節——combine_timeframes/各pages對conclusion做的是精確字串比對，
+    # 不能在這裡夾帶括號文字，否則會讓長短天期否決/UI判色失效）。
+    volume_bear_confirm_ma_synced = volume_bear_confirm and ma_bias < 0
+    volume_bear_confirm_requires_ma_sync = sell_cfg.get("volume_bear_confirm_requires_ma_sync", True)
+    volume_bear_confirm_partial = (
+        volume_bear_confirm and volume_bear_confirm_requires_ma_sync and not volume_bear_confirm_ma_synced
+    )
+    volume_bear_confirm_for_hard_sell = (
+        volume_bear_confirm_ma_synced if volume_bear_confirm_requires_ma_sync else volume_bear_confirm
+    )
     hard_sell = (
         (key_ma_down_veto and sell_cfg.get("key_ma_down_veto", True))
         or (four_key_broken and sell_cfg.get("four_key_broken", True))
         or (dead_cross_confirmed and sell_cfg.get("dead_cross_confirmed", True))
-        or (volume_bear_confirm and sell_cfg.get("volume_bear_confirm", True))
+        or (volume_bear_confirm_for_hard_sell and sell_cfg.get("volume_bear_confirm", True))
     )
 
     # ---- 只有 MACD 單獨背離、均線與量能都還沒同步走壞：先觀望不追空 ----
+    # （均線仍偏多但OBV已同步背離的情況，走volume_bear_confirm_partial那條
+    # 「分級減碼」，不要落到這條純觀望——所以這裡也要排除掉它）
     caution_only = (
         watch_cfg.get("caution_only_on_macd_divergence", True)
-        and macd_bearish_divergence and not volume_bear_confirm and not key_ma_down_veto
+        and macd_bearish_divergence and not volume_bear_confirm_for_hard_sell
+        and not volume_bear_confirm_partial and not key_ma_down_veto
     )
 
     strong_bullish = (
@@ -1017,6 +1043,15 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
 
     if hard_sell:
         conclusion = "賣出減碼"
+    elif volume_bear_confirm_partial:
+        # 均線仍偏多，頂背離+OBV只能算「分級減碼」示警，不是全賣確認
+        conclusion = "賣出減碼"
+        caveats.append(
+            "頂背離+OBV同步走弱，但生死線仍偏多（均線未破壞），回測（60檔/36個月/"
+            "138筆事件）顯示這類訊號後20日續跌45%、上漲55%，且兩端皆有肥尾"
+            "（最差-47%、最佳+75%）：建議先減碼50%觀察，不要在均線未破壞前全數出清，"
+            "待均線也轉空再出清剩餘部位"
+        )
     elif leading_indicator_exit_alert:
         conclusion = "觀望"
         if mtm_alert_active:
@@ -1065,7 +1100,8 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
         )
 
     abs_score = abs(score)
-    if key_ma_down_veto or volume_bear_confirm or (ma_bias >= add_cfg["addon_ma_bias"] and volume_bias > 0):
+    if key_ma_down_veto or volume_bear_confirm_for_hard_sell \
+            or (ma_bias >= add_cfg["addon_ma_bias"] and volume_bias > 0):
         confidence = "高"
     elif abs_score >= scoring_cfg["confidence_mid_abs_score"]:
         confidence = "中"

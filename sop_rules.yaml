@@ -1,3 +1,9 @@
+# updated 2026-10-07：volume_bear_confirm(MACD頂背離+OBV同步走壞)新增均線
+#   同步閘門(volume_bear_confirm_requires_ma_sync)，均線仍偏多時從「全賣」
+#   降級為「分級減碼」（conclusion不變，caveats註明建議只先減碼50%），依
+#   test_volume_bear_confirm_ma_gate(_wide).py回測驗證（60檔/36個月/138筆
+#   事件：均線偏多時單獨出現此訊號，20日後續跌45.3%/上漲54.7%，兩端皆有
+#   肥尾，最差-47%最佳+75.4%）
 # updated 2026-10-04：新增週KD金叉+週5/35MA(weekly_kd_golden_cross)、60分MA20+
 #   MA120烏龜線+MA240三線確認(min60_turtle_confirm)兩條新規則，皆為歷史回測
 #   驗證後新增，非但丁老師原始教材條文（見兩區塊內註解與對應test_*.py）
@@ -192,6 +198,16 @@ sell_rules:
   four_key_broken: true        # 日線四關價：今開跌破昨低 → 賣出減碼
   dead_cross_confirmed: true   # MACD死亡交叉 且 均線同步偏空 → 賣出減碼
   volume_bear_confirm: true    # MACD頂背離 + OBV/BBI同步走壞（真正頂背離） → 賣出減碼
+  # 2026-10-07新增：volume_bear_confirm要不要也要求均線同步偏空(ma_bias<0)
+  # 才算全賣確認，否則降級為「分級減碼」（conclusion仍是賣出減碼，但caveats
+  # 註明建議只先減碼50%）。背景：金像電(2368) 2026-10-02收盤觸發頂背離+OBV
+  # 判賣出減碼，均線(MA35)當時仍上揚且站上，隔一個交易日卻在PCB族群消息面
+  # 帶動下鎖漲停——用test_volume_bear_confirm_ma_gate(_wide).py回測驗證
+  # （60檔/36個月/138筆事件）：均線仍偏多時單獨出現這個訊號，20日後續跌
+  # 45.3%、上漲54.7%（接近銅板），但兩端都有肥尾（最差-47%、最佳+75.4%）。
+  # 設為true才會要求均線同步；設為false則完全恢復成改動前的行為（頂背離+
+  # OBV單獨即可全賣，不管均線方向）。
+  volume_bear_confirm_requires_ma_sync: true
   score_threshold: -3          # 綜合分數 <= 門檻 → 賣出減碼
 
 # ==================================================================
