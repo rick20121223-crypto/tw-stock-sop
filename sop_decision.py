@@ -1068,6 +1068,16 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
         or (dead_cross_confirmed and sell_cfg.get("dead_cross_confirmed", True))
         or (volume_bear_confirm_for_hard_sell and sell_cfg.get("volume_bear_confirm", True))
     )
+    # 待驗證（2026-10-08）：test_leading_indicator_protective_value.py用13檔
+    # 60分K(約120天)比較四類降級訊號觸發後的保護力，結果跟SOP位階預設的
+    # 「hard_sell權威最高、最可信」相反——hard_sell(這裡)4根K棒後下跌比例
+    # 41.0%、平均報酬+1.00%(還是漲的)，比純MTM/CCI示警(leading_indicator_
+    # exit_alert，下方)的51.4%/+0.12%還弱，可能是hard_sell的條件本質上是
+    # 落後指標的「再確認」，訊號出現時這段跌勢常常已經走完、容易迎來技術
+    # 反彈。但這次測試期間連無條件基準都是正報酬(偏多格局)，逆勢賣出訊號
+    # 本來就容易在多頭期被軋，不能排除是市況偏多稀釋了hard_sell的保護力，
+    # 不是規則設計本身的問題——要拉長回測期、涵蓋過一段像樣的回檔/空頭，
+    # 才能真的下定論。在那之前不調整位階順序，均線/四關價仍視為最終裁決權。
 
     # ---- 只有 MACD 單獨背離、均線與量能都還沒同步走壞：先觀望不追空 ----
     # （均線仍偏多但OBV已同步背離的情況，走volume_bear_confirm_partial那條
