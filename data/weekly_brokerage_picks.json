@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-06",
+  "generated_at": "2026-10-07",
   "lookback_days": 14,
   "mentions": [
     {
@@ -135,8 +135,17 @@
           "date": "2026-10-01",
           "firm": "Money錢",
           "label": "229期-10檔AI潛力股"
+        },
+        {
+          "date": "2026-10-05",
+          "firm": "GoldmanSachs",
+          "label": "TSMC財報前瞻",
+          "rating": "Buy",
+          "target_price": "3300"
         }
-      ]
+      ],
+      "rating": "Buy",
+      "target_price": "3300"
     },
     {
       "code": "2337",
@@ -203,10 +212,17 @@
           "label": "PCB_CCL產業報告",
           "rating": "買進",
           "target_price": "10000"
+        },
+        {
+          "date": "2026-10-05",
+          "firm": "Daiwa",
+          "label": "TW-CCL產業報告",
+          "rating": "Buy",
+          "target_price": "7200"
         }
       ],
-      "rating": "買進",
-      "target_price": "10000"
+      "rating": "Buy",
+      "target_price": "7200"
     },
     {
       "code": "2395",
@@ -673,6 +689,19 @@
       ]
     },
     {
+      "code": "6213",
+      "name": "燿華",
+      "reports": [
+        {
+          "date": "2026-10-05",
+          "firm": "Daiwa",
+          "label": "TW-CCL產業報告",
+          "rating": "Buy"
+        }
+      ],
+      "rating": "Buy"
+    },
+    {
       "code": "6239",
       "name": "力成",
       "reports": [
@@ -1008,21 +1037,6 @@
       ]
     },
     {
-      "code": "8210",
-      "name": "勤誠",
-      "reports": [
-        {
-          "date": "2026-09-22",
-          "firm": "宏遠投顧",
-          "label": "個股報告",
-          "rating": "買進",
-          "target_price": "1320"
-        }
-      ],
-      "rating": "買進",
-      "target_price": "1320"
-    },
-    {
       "code": "8299",
       "name": "群聯",
       "reports": [
@@ -1042,15 +1056,35 @@
       "rating": "EPS上看400元"
     },
     {
+      "code": "8383",
+      "name": "千附",
+      "reports": [
+        {
+          "date": "2026-10-07",
+          "firm": "元大投顧",
+          "label": "10/07專欄重點股"
+        }
+      ]
+    },
+    {
       "code": "8996",
       "name": "高力",
       "reports": [
+        {
+          "date": "2026-10-06",
+          "firm": "CLSA/SinoPac",
+          "label": "Kaori個股報告",
+          "rating": "HC Outperform",
+          "target_price": "2710"
+        },
         {
           "date": "2026-10-07",
           "firm": "先探投資週刊",
           "label": "2424期-高價股強者恆強"
         }
-      ]
+      ],
+      "rating": "HC Outperform",
+      "target_price": "2710"
     }
   ]
 }
