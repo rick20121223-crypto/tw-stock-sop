@@ -453,11 +453,76 @@ def _summarize_errors(errors: list) -> list:
     return summary
 
 
+def _build_narrative_summary(long_changes: list, short_changes: list,
+                              holding_changes: list, contract_liability_rising: list) -> str:
+    """
+    用規則式文字（不呼叫LLM）把這次異動轉成一段白話摘要，放在信件最前面，
+    讓不熟技術指標的人不用先看完所有卡片才知道整體是偏多還是偏空（見
+    PRODUCT.md「結論需要用白話說明」）。只統計「轉強(加碼/買進)」「轉弱
+    (賣出減碼)」，轉成「觀望」的不特別強調方向，維持簡單。
+    """
+    def _tally(changes):
+        up = [c["name"] for c in changes if BUCKET_ORDER.get(c["new"], 9) <= 1]
+        down = [c["name"] for c in changes if c["new"] == "賣出減碼"]
+        return up, down
+
+    parts = []
+    if long_changes:
+        up, down = _tally(long_changes)
+        bits = []
+        if up:
+            bits.append(f"{len(up)}檔轉強（{'、'.join(up)}）")
+        if down:
+            bits.append(f"{len(down)}檔轉弱（{'、'.join(down)}）")
+        if bits:
+            parts.append(f"📅長線：{'，'.join(bits)}。")
+
+    if short_changes:
+        up, down = _tally(short_changes)
+        bits = []
+        if up:
+            bits.append(f"{len(up)}檔轉強（{'、'.join(up)}）")
+        if down:
+            bits.append(f"{len(down)}檔轉弱（{'、'.join(down)}）")
+        if bits:
+            parts.append(f"⚡短線：{'，'.join(bits)}。")
+
+    if holding_changes:
+        up = [c["name"] for c in holding_changes if c["direction"] == "上升"]
+        down = [c["name"] for c in holding_changes if c["direction"] == "下降"]
+        bits = []
+        if up:
+            bits.append(f"{len(up)}檔大戶持股上升（{'、'.join(up)}）")
+        if down:
+            bits.append(f"{len(down)}檔下降（{'、'.join(down)}）")
+        parts.append(f"🏦大戶動向：{'，'.join(bits)}。")
+
+    if contract_liability_rising:
+        names = "、".join(r["name"] for r in contract_liability_rising)
+        parts.append(f"📈合約負債本季持續上升：{names}（每週固定提醒，非新異動）。")
+
+    return " ".join(parts)
+
+
+def _narrative_summary_html(summary: str) -> str:
+    if not summary:
+        return ""
+    return (
+        '<div style="background:#eef3fb; border-radius:6px; padding:10px 14px; '
+        'margin-bottom:16px; color:#333; font-size:13px; line-height:1.6;">'
+        f'💡 {summary}</div>'
+    )
+
+
 def build_change_email(today: str, long_changes: list, short_changes: list,
                         holding_changes: list, contract_liability_rising: list,
                         errors: list) -> tuple:
     errors = _summarize_errors(errors)
+    summary = _build_narrative_summary(long_changes, short_changes, holding_changes,
+                                        contract_liability_rising)
     plain_lines = [f"但丁股票SOP 訊號異動通知（{today}）"]
+    if summary:
+        plain_lines += ["", summary]
     if long_changes:
         plain_lines += ["", HORIZON_LABEL["長期"] + "異動：", ""] + _changes_to_plain(long_changes)
     if short_changes:
@@ -470,7 +535,7 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
         plain_lines += ["", "⚠️ 以下股票資料取得失敗："] + errors
     plain = "\n".join(plain_lines)
 
-    html_body = ""
+    html_body = _narrative_summary_html(summary)
     html_body += _section_html(HORIZON_LABEL["長期"] + "異動", _changes_to_html(long_changes))
     html_body += _section_html(HORIZON_LABEL["短期"] + "異動", _changes_to_html(short_changes))
     html_body += _section_html("🏦 大股東(>400張)持股動向", _holding_changes_to_html(holding_changes))
