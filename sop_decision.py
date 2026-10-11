@@ -249,7 +249,7 @@ def _detect_bearish_divergence(df: pd.DataFrame, lookback: int, column: str = "M
     if pd.isna(prior_peak_val) or pd.isna(recent_peak_val):
         return False
 
-    return recent_peak_close > prior_peak_close and recent_peak_val < prior_peak_val
+    return bool(recent_peak_close > prior_peak_close and recent_peak_val < prior_peak_val)
 
 
 # ------------------------------------------------------------------
