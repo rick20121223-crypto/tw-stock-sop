@@ -52,6 +52,7 @@ class Verdict:
     reasons: List[str] = field(default_factory=list)
     caveats: List[str] = field(default_factory=list)
     volume_breakout_confirmed: bool = False  # 三角收斂帶量突破確認（見_detect_triangle_consolidation）
+    suggested_exposure: Optional[int] = None  # 100/70/50/30/0，None=無法明確分類（見exposure_rules）
 
 
 # ------------------------------------------------------------------
@@ -1062,6 +1063,13 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     ma_bias += _step2_weekly_kd_golden_cross(df, tf, latest, reasons)
     ma_bias += _step2_60min_turtle_confirm(df, tf, latest, reasons)
     macd_bias, dead_cross, macd_bearish_divergence = _step3_macd(df, latest, reasons, caveats)
+    # KD(36,5,5) Double Check：只適用日/60分/5分，週線維持既有KD(9,3,3)
+    # 規則不變（見sop_rules.yaml kd365區塊註解）
+    if tf != "週":
+        kd365_bias, kd365_cross_down, kd365_bearish_divergence = _step_kd365(
+            df, tf, latest, reasons, caveats)
+    else:
+        kd365_bias, kd365_cross_down, kd365_bearish_divergence = 0.0, False, False
     volume_bias, volume_bear_confirm = _step4_volume(
         df, tf, latest, macd_bearish_divergence, reasons, caveats)
     mtm_exit_alert = _step5_mtm(df, tf, latest, reasons)
@@ -1220,12 +1228,31 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     else:
         confidence = "低" if abs_score < scoring_cfg["confidence_low_abs_score"] else "中"
 
+    # ---- 建議曝險（5級，待backtest驗證微調，見sop_rules.yaml exposure_rules）----
+    # 這一輪刻意不讓這個欄位影響conclusion——只是把但丁老師課程的部位
+    # 控管概念，用既有已經算出來的條件變數做映射，不是重新設計一套邏輯。
+    exposure_cfg = RULES.get("exposure_rules", {})
+    kd365_macd_double_bear = kd365_cross_down and macd_bearish_divergence
+    if hard_sell:
+        suggested_exposure = 0
+    elif volume_bear_confirm_partial or kd365_macd_double_bear:
+        suggested_exposure = 30
+    elif caution_only or leading_indicator_exit_alert or kd365_cross_down or kd365_bearish_divergence:
+        suggested_exposure = 50
+    elif conclusion == "觀望" and not key_ma_down_veto:
+        suggested_exposure = exposure_cfg.get("watch_support_held", 70)
+    elif conclusion in ("買進", "加碼"):
+        suggested_exposure = 100
+    else:
+        suggested_exposure = None
+
     if not reasons:
         reasons.append("各項指標訊號不明顯，暫無明確方向")
 
     return Verdict(conclusion=conclusion, confidence=confidence, score=score,
                     reasons=reasons, caveats=caveats,
-                    volume_breakout_confirmed=triangle_breakout_confirmed)
+                    volume_breakout_confirmed=triangle_breakout_confirmed,
+                    suggested_exposure=suggested_exposure)
 
 
 # ------------------------------------------------------------------
@@ -1239,7 +1266,7 @@ def combine_timeframes(verdicts: Dict[str, Verdict]) -> dict:
 
     detail = {
         tf: {"結論": v.conclusion, "信心": v.confidence, "理由": v.reasons, "但書": v.caveats,
-             "帶量突破": v.volume_breakout_confirmed}
+             "帶量突破": v.volume_breakout_confirmed, "建議曝險": v.suggested_exposure}
         for tf, v in verdicts.items()
     }
 
