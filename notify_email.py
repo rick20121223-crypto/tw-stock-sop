@@ -93,6 +93,14 @@ HOLDING_STYLE = {
     "下降": {"color": "#43a047", "bg": "#eaf6ec", "icon": "🔻"},
 }
 
+# 真實持股停損提醒：data/my_holdings.csv記錄的個人成本價/股數，不是但丁
+# 老師SOP方法論的一部分（SOP只判讀股票本身技術結構，不知道你的成本），
+# 刻意跟sop_rules.yaml分開存放、寫死在這裡。門檻-15%：現有SOP的「賣出
+# 減碼」本身就是結構性停損，這條只是抓SOP沒抓到的漏網情況，門檻故意
+# 設寬一點避免跟台股正常波動（比歐美股更大）搶著觸發。
+MY_HOLDINGS_FILE = Path(__file__).parent / "data" / "my_holdings.csv"
+STOP_LOSS_THRESHOLD = -0.15
+
 
 def full_watchlist():
     """
@@ -496,6 +504,70 @@ def _industry_group_to_html(alerts: list) -> str:
     return cards
 
 
+def _load_my_holdings() -> Dict[str, dict]:
+    """
+    讀 data/my_holdings.csv（真實持股成本，本機/CI secret寫入，不進版控，
+    見.gitignore說明）。檔案不存在就回傳空dict，不當錯誤處理——本機沒
+    建立這個檔案、或CI的secret還沒設定時，停損提醒單純不會觸發，不影響
+    其他通知照常運作。avg_cost不是合法數字（例如還沒填的TBD）的列直接
+    跳過，不讓單一筆資料錯誤擋掉整批停損檢查。
+    """
+    if not MY_HOLDINGS_FILE.exists():
+        return {}
+    holdings = {}
+    with open(MY_HOLDINGS_FILE, "r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                avg_cost = float(row["avg_cost"])
+                shares = int(row["shares"])
+            except (KeyError, ValueError):
+                continue
+            holdings[row["code"]] = {"name": row["name"], "avg_cost": avg_cost, "shares": shares}
+    return holdings
+
+
+def _stop_loss_alerts(holdings: Dict[str, dict], latest_closes: Dict[str, float]) -> list:
+    """
+    每次執行都重新檢查目前跌幅（不是跟上次比對才觸發），只要還跌破門檻
+    就持續提醒，回升到門檻之上才會消失——跟contract_liability_rising
+    同一個「每次都列一次維持印象」的設計，不是「有變化才通知」。
+    """
+    alerts = []
+    for code, h in holdings.items():
+        close = latest_closes.get(code)
+        if close is None or h["avg_cost"] <= 0:
+            continue
+        loss_pct = (close - h["avg_cost"]) / h["avg_cost"]
+        if loss_pct <= STOP_LOSS_THRESHOLD:
+            alerts.append({"name": h["name"], "code": code, "avg_cost": h["avg_cost"],
+                            "close": close, "loss_pct": loss_pct})
+    alerts.sort(key=lambda a: a["loss_pct"])
+    return alerts
+
+
+def _stop_loss_to_plain(alerts: list) -> list:
+    lines = []
+    for a in alerts:
+        lines.append(
+            f"🛑 {a['name']}（{a['code']}）：均價{a['avg_cost']:.2f} → 現價{a['close']:.2f}"
+            f"（{a['loss_pct']*100:.1f}%）"
+        )
+    return lines
+
+
+def _stop_loss_to_html(alerts: list) -> str:
+    cards = ""
+    for a in alerts:
+        detail = (
+            f'<span style="color:#999;">均價{a["avg_cost"]:.2f}</span>'
+            f' <span style="color:#bbb;">→</span> '
+            f'<span style="color:#43a047; font-weight:700; font-size:15px;">'
+            f'現價{a["close"]:.2f}（{a["loss_pct"]*100:.1f}%）</span>'
+        )
+        cards += _card_html("🛑", "#43a047", "#eaf6ec", f"{a['name']}（{a['code']}）", detail)
+    return cards
+
+
 def _summarize_errors(errors: list) -> list:
     """
     把「Fugle 429 Rate limit」這種同一原因、常常一次影響一大串股票的錯誤，
@@ -578,7 +650,7 @@ def _narrative_summary_html(summary: str) -> str:
 
 def build_change_email(today: str, long_changes: list, short_changes: list,
                         holding_changes: list, contract_liability_rising: list,
-                        industry_group_alerts: list,
+                        industry_group_alerts: list, stop_loss_alerts: list,
                         errors: list) -> tuple:
     errors = _summarize_errors(errors)
     summary = _build_narrative_summary(long_changes, short_changes, holding_changes,
@@ -586,6 +658,8 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
     plain_lines = [f"但丁股票SOP 訊號異動通知（{today}）"]
     if summary:
         plain_lines += ["", summary]
+    if stop_loss_alerts:
+        plain_lines += ["", "🛑 停損提醒（個人持股成本，非SOP結論）：", ""] + _stop_loss_to_plain(stop_loss_alerts)
     if long_changes:
         plain_lines += ["", HORIZON_LABEL["長期"] + "異動：", ""] + _changes_to_plain(long_changes)
     if short_changes:
@@ -601,6 +675,7 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
     plain = "\n".join(plain_lines)
 
     html_body = _narrative_summary_html(summary)
+    html_body += _section_html("🛑 停損提醒（個人持股成本，非SOP結論）", _stop_loss_to_html(stop_loss_alerts))
     html_body += _section_html(HORIZON_LABEL["長期"] + "異動", _changes_to_html(long_changes))
     html_body += _section_html(HORIZON_LABEL["短期"] + "異動", _changes_to_html(short_changes))
     html_body += _section_html("🏦 大股東(>400張)持股動向", _holding_changes_to_html(holding_changes))
@@ -762,6 +837,7 @@ def main() -> None:
     new_state = {}
     long_changes, short_changes, holding_changes = [], [], []
     contract_liability_rising = []
+    latest_closes: Dict[str, float] = {}
     errors = []
     log_rows = []
     check_contract_liability_today = _is_monday_in_taiwan()
@@ -791,6 +867,9 @@ def main() -> None:
                 errors.append(f"{name}（{code}）短期：{short_err}")
             if long_bucket is None:
                 continue  # 長期是核心判讀，抓不到就整檔略過
+
+            if long_close is not None:
+                latest_closes[code] = long_close
 
             key = f"{code}_{market}"
             prev = last_state.get(key)
@@ -852,7 +931,12 @@ def main() -> None:
         send_email(f"[但丁股票SOP] 通知已啟用（{today}）", plain, html, gmail_address, gmail_app_password)
         return
 
-    if not long_changes and not short_changes and not holding_changes and not contract_liability_rising:
+    # 停損提醒每次都重新檢查（不是比對上次才觸發），要排在早退判斷之前，
+    # 否則沒有其他SOP訊號異動、但部位仍跌破門檻的日子會被提早return跳過。
+    stop_loss_alerts = _stop_loss_alerts(_load_my_holdings(), latest_closes)
+
+    if not long_changes and not short_changes and not holding_changes \
+            and not contract_liability_rising and not stop_loss_alerts:
         print(f"{today}：無訊號變化，不寄信。")
         if errors:
             print("以下股票取得資料失敗：\n" + "\n".join(errors))
@@ -865,7 +949,8 @@ def main() -> None:
     holding_changes.sort(key=lambda c: 0 if c["direction"] == "上升" else 1)
     contract_liability_rising.sort(key=lambda c: c.get("pct_change") or 0, reverse=True)
     plain, html = build_change_email(today, long_changes, short_changes, holding_changes,
-                                      contract_liability_rising, industry_group_alerts, errors)
+                                      contract_liability_rising, industry_group_alerts,
+                                      stop_loss_alerts, errors)
     print(plain)
     send_email(f"[但丁股票SOP] 訊號異動通知（{today}）", plain, html, gmail_address, gmail_app_password)
 

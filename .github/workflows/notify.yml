@@ -36,6 +36,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: 寫入本機持股成本資料（停損提醒用，data/my_holdings.csv不進版控）
+        env:
+          MY_HOLDINGS_CSV: ${{ secrets.MY_HOLDINGS_CSV }}
+        run: printf '%s' "$MY_HOLDINGS_CSV" > data/my_holdings.csv
+
       - name: 執行 SOP 判讀並視情況寄信通知
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
