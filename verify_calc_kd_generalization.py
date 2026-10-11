@@ -55,11 +55,13 @@ def main() -> None:
     pd.testing.assert_series_equal(old["D"], new["D"], check_names=False)
     print("OK: calc_kd(df) 預設值跟泛化前公式逐值相同")
 
-    # 2. 新參數獨立欄位，不污染原本K/D
-    kd365 = calc_kd(df, n=36, m1=5, m2=5, k_col="K365", d_col="D365")
+    # 2. 新參數獨立欄位，不污染原本K/D —— 在「已經有K/D」的df上再呼叫一次
+    #    自訂參數，比照run_all_indicators()真正的呼叫順序（先算預設KD，
+    #    再算KD365），確認K365/D365正確產生、且不覆蓋既有K/D。
+    kd365 = calc_kd(new, n=36, m1=5, m2=5, k_col="K365", d_col="D365")
     assert "K365" in kd365.columns and "D365" in kd365.columns
-    assert "K" in kd365.columns and "D" in kd365.columns
     pd.testing.assert_series_equal(kd365["K"], new["K"], check_names=False)
+    pd.testing.assert_series_equal(kd365["D"], new["D"], check_names=False)
     print("OK: calc_kd(df, n=36, m1=5, m2=5, k_col='K365', d_col='D365') 正確輸出獨立欄位，不影響K/D")
 
     # 3. run_all_indicators() 同時有兩組欄位

@@ -405,8 +405,6 @@ def calc_kd(df: pd.DataFrame, n: int = 9, m1: int = 3, m2: int = 3,
     並存多組不同參數的KD（例如KD(9,3,3)跟KD(36,5,5)），不互相覆蓋。
     """
     df = df.copy()
-
-    # 計算所請求的KD參數版本
     low_min = df["min"].rolling(window=n).min()
     high_max = df["max"].rolling(window=n).max()
     denom = (high_max - low_min).replace(0, np.nan)
@@ -423,23 +421,6 @@ def calc_kd(df: pd.DataFrame, n: int = 9, m1: int = 3, m2: int = 3,
 
     df[k_col] = k
     df[d_col] = d
-
-    # 若指定了自訂欄位名，同時也加上預設的K/D(9,3,3)，讓多組KD能並存
-    if k_col != "K" or d_col != "D":
-        low_min = df["min"].rolling(window=9).min()
-        high_max = df["max"].rolling(window=9).max()
-        denom = (high_max - low_min).replace(0, np.nan)
-        rsv = ((df["close"] - low_min) / denom * 100).fillna(50.0)
-        if len(df) > 0:
-            rsv.iloc[0] = 50.0
-        k = rsv.ewm(alpha=1 / 3, adjust=False).mean()
-        k_seeded = k.copy()
-        if len(df) > 0:
-            k_seeded.iloc[0] = 50.0
-        d = k_seeded.ewm(alpha=1 / 3, adjust=False).mean()
-        df["K"] = k
-        df["D"] = d
-
     return df
 
 
