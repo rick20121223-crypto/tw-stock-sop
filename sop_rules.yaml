@@ -75,6 +75,22 @@ indicators:
     golden_cross_above_zero_bonus: 2     # 零軸上黃金交叉，動能轉強
     dead_cross_penalty: -2               # 死亡交叉
 
+  kd365:
+    # 但丁老師課程新增的第三代指標，跟MACD做Double Check。課程筆記原本
+    # 寫「365」，經券商App參數截圖比對確認為「KD-隨機指標(常用)」預設：
+    # 期間36／RSVt權值5／Kt權值5，不是單一個period=365的數字。
+    # 只適用日/60分/5分，週線與月線維持原本的KD(9,3,3)（weekly_kd_
+    # golden_cross規則），不套用這組參數。
+    n: 36
+    m1: 5
+    m2: 5
+    golden_cross_bonus: 1       # 待backtest驗證微調的初始值
+    dead_cross_penalty: -1      # 待backtest驗證微調的初始值
+    blunted_threshold_high: 80  # K值連續N根高於此視為高檔鈍化
+    blunted_threshold_low: 20   # K值連續N根低於此視為低檔鈍化
+    blunted_min_bars: 3         # 待backtest驗證微調的初始值
+    divergence_lookback: 20     # 比照macd.divergence_lookback
+
   volume:
     rising_bonus: 1     # OBV均線（或5分線用BBI）上揚
     falling_penalty: -1 # OBV均線（或5分線用BBI）下彎
@@ -290,6 +306,19 @@ pattern_recognition:
 # ==================================================================
 special_notes:
   ma120_second_leg_hint: true   # 大跌測半年線(MA120)打出第二隻腳未破 → 提示「帶著鋼盔慢買」
+
+# ==================================================================
+# 漸進式部位建議（suggested_exposure，不影響conclusion本身）
+# ------------------------------------------------------------------
+# 但丁老師課程新增的5級部位控管概念：100%(買進/加碼) / 70%(觀望但均線
+# 支撐未破) / 50%(單一指標示警) / 30%(MACD+KD365雙重轉弱確認但均線未破)
+# / 0%(hard_sell，均線已破位)。這個表格待backtest驗證微調，先建好管線
+# 讓資料能跑出來。
+# ==================================================================
+exposure_rules:
+  watch_support_held: 70   # 但丁老師原話「7至8成」，取中間值，可調整
+  sell_default: 30         # 經score門檻判成賣出減碼、但未觸發hard_sell/
+                            # 雙重示警的較弱賣出訊號，預設給的曝險建議
 
 # ==================================================================
 # 產業龍頭股族群對照表（供族群聯動提示用，不影響買賣結論判讀）

@@ -52,6 +52,7 @@ class Verdict:
     reasons: List[str] = field(default_factory=list)
     caveats: List[str] = field(default_factory=list)
     volume_breakout_confirmed: bool = False  # 三角收斂帶量突破確認（見_detect_triangle_consolidation）
+    suggested_exposure: Optional[int] = None  # 100/70/50/30/0，None=無法明確分類（見exposure_rules）
 
 
 # ------------------------------------------------------------------
@@ -230,8 +231,8 @@ def _step2_60min_turtle_confirm(df: pd.DataFrame, tf: str, latest: pd.Series,
 # 簡化版頂背離偵測：近期股價創高，但 MACD 柱狀圖高點未同步創高。
 # 這是簡化偵測，非教科書式嚴謹型態辨識，僅供參考。
 # ------------------------------------------------------------------
-def _detect_bearish_divergence(df: pd.DataFrame, lookback: int) -> bool:
-    if len(df) < lookback or "MACD_hist" not in df.columns:
+def _detect_bearish_divergence(df: pd.DataFrame, lookback: int, column: str = "MACD_hist") -> bool:
+    if len(df) < lookback or column not in df.columns:
         return False
     window = df.tail(lookback).reset_index(drop=True)
     half = lookback // 2
@@ -243,13 +244,13 @@ def _detect_bearish_divergence(df: pd.DataFrame, lookback: int) -> bool:
     recent_peak_idx = recent["close"].idxmax()
     prior_peak_close = prior.loc[prior_peak_idx, "close"]
     recent_peak_close = recent.loc[recent_peak_idx, "close"]
-    prior_peak_hist = prior.loc[prior_peak_idx, "MACD_hist"]
-    recent_peak_hist = recent.loc[recent_peak_idx, "MACD_hist"]
+    prior_peak_val = prior.loc[prior_peak_idx, column]
+    recent_peak_val = recent.loc[recent_peak_idx, column]
 
-    if pd.isna(prior_peak_hist) or pd.isna(recent_peak_hist):
+    if pd.isna(prior_peak_val) or pd.isna(recent_peak_val):
         return False
 
-    return recent_peak_close > prior_peak_close and recent_peak_hist < prior_peak_hist
+    return bool(recent_peak_close > prior_peak_close and recent_peak_val < prior_peak_val)
 
 
 # ------------------------------------------------------------------
@@ -295,6 +296,59 @@ def _step3_macd(df: pd.DataFrame, latest: pd.Series,
         reasons.append("⚠️ MACD 出現頂背離跡象（股價創高、柱狀圖未同步創高），先提高警覺、收緊停利")
 
     return macd_bias, dead_cross, bearish_divergence
+
+
+# ------------------------------------------------------------------
+# Step 3.5：KD(36,5,5) Double Check（但丁老師課程新增的第三代指標）
+# 只適用日/60分/5分，呼叫端須在tf != "週"時才呼叫這個函式——週線維持
+# 既有_step2_weekly_kd_golden_cross用的KD(9,3,3)，不套這組參數
+# （見sop_rules.yaml kd365區塊註解）。這一輪刻意不讓kd365_bias進評分
+# 公式、不讓kd365_cross_down/kd365_bearish_divergence否決conclusion，
+# 只用於reasons/caveats文字與suggested_exposure的計算，等
+# test_kd365_double_check.py回測驗證過才考慮讓它影響conclusion本身。
+# ------------------------------------------------------------------
+def _step_kd365(df: pd.DataFrame, tf: str, latest: pd.Series,
+                 reasons: List[str], caveats: List[str]) -> tuple:
+    """回傳 (kd365_bias: float, kd365_cross_down: bool, kd365_bearish_divergence: bool)"""
+    cfg = RULES["indicators"]["kd365"]
+    kd365_bias = 0.0
+    kd365_cross_down = False
+
+    if pd.isna(latest.get("K365")) or pd.isna(latest.get("D365")):
+        caveats.append("KD(36,5,5) 資料不足")
+        return kd365_bias, False, False
+
+    k, d = latest["K365"], latest["D365"]
+
+    if len(df) >= 2:
+        prev = df.iloc[-2]
+        if pd.notna(prev.get("K365")) and pd.notna(prev.get("D365")):
+            golden = prev["K365"] <= prev["D365"] and k > d
+            dead = prev["K365"] >= prev["D365"] and k < d
+            if golden:
+                kd365_bias += cfg["golden_cross_bonus"]
+                reasons.append("KD(36,5,5) 出現黃金交叉")
+            elif dead:
+                kd365_bias += cfg["dead_cross_penalty"]
+                kd365_cross_down = True
+                reasons.append("KD(36,5,5) 出現死亡交叉")
+
+    high_th = cfg["blunted_threshold_high"]
+    low_th = cfg["blunted_threshold_low"]
+    blunted_bars = cfg["blunted_min_bars"]
+    if len(df) >= blunted_bars:
+        recent_k = df["K365"].tail(blunted_bars)
+        if recent_k.notna().all() and (recent_k > high_th).all():
+            reasons.append(f"KD(36,5,5) 連續{blunted_bars}根K棒維持高檔鈍化（>{high_th}）")
+        elif recent_k.notna().all() and (recent_k < low_th).all():
+            reasons.append(f"KD(36,5,5) 連續{blunted_bars}根K棒維持低檔鈍化（<{low_th}）")
+
+    kd365_bearish_divergence = _detect_bearish_divergence(
+        df, cfg["divergence_lookback"], column="K365")
+    if kd365_bearish_divergence:
+        reasons.append("⚠️ KD(36,5,5) 出現頂背離跡象（股價創高、K值未同步創高），先提高警覺")
+
+    return kd365_bias, kd365_cross_down, kd365_bearish_divergence
 
 
 # ------------------------------------------------------------------
@@ -1009,6 +1063,13 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     ma_bias += _step2_weekly_kd_golden_cross(df, tf, latest, reasons)
     ma_bias += _step2_60min_turtle_confirm(df, tf, latest, reasons)
     macd_bias, dead_cross, macd_bearish_divergence = _step3_macd(df, latest, reasons, caveats)
+    # KD(36,5,5) Double Check：只適用日/60分/5分，週線維持既有KD(9,3,3)
+    # 規則不變（見sop_rules.yaml kd365區塊註解）
+    if tf != "週":
+        kd365_bias, kd365_cross_down, kd365_bearish_divergence = _step_kd365(
+            df, tf, latest, reasons, caveats)
+    else:
+        kd365_bias, kd365_cross_down, kd365_bearish_divergence = 0.0, False, False
     volume_bias, volume_bear_confirm = _step4_volume(
         df, tf, latest, macd_bearish_divergence, reasons, caveats)
     mtm_exit_alert = _step5_mtm(df, tf, latest, reasons)
@@ -1167,12 +1228,41 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     else:
         confidence = "低" if abs_score < scoring_cfg["confidence_low_abs_score"] else "中"
 
+    # ---- 建議曝險（5級，待backtest驗證微調，見sop_rules.yaml exposure_rules）----
+    # 這一輪刻意不讓這個欄位影響conclusion——只是把但丁老師課程的部位
+    # 控管概念，用既有已經算出來的條件變數做映射，不是重新設計一套邏輯。
+    # 週線/月線固定None、不分類：跟「週線與月線完全不動」的範圍限制一致，
+    # 不要讓一個沒人設計過的部位建議附掛在週線輸出上（最終review發現，
+    # 原本的映射邏輯沒有排除週線，週線會意外拿到0/50/70/100其中一個值）。
+    exposure_cfg = RULES.get("exposure_rules", {})
+    kd365_macd_double_bear = kd365_cross_down and macd_bearish_divergence
+    if tf == "週":
+        suggested_exposure = None
+    elif hard_sell:
+        suggested_exposure = 0
+    elif volume_bear_confirm_partial or kd365_macd_double_bear:
+        suggested_exposure = 30
+    elif caution_only or leading_indicator_exit_alert or kd365_cross_down or kd365_bearish_divergence:
+        suggested_exposure = 50
+    elif conclusion == "觀望" and not key_ma_down_veto:
+        suggested_exposure = exposure_cfg.get("watch_support_held", 70)
+    elif conclusion in ("買進", "加碼"):
+        suggested_exposure = 100
+    elif conclusion == "賣出減碼":
+        # 經score門檻判成賣出減碼、但沒有觸發hard_sell/雙重示警的較弱賣出
+        # 訊號，原本會落到最後的None——一個「賣出減碼」結論卻配「無法
+        # 分類」的曝險建議，使用者看了會當成bug。改給明確的低曝險預設值。
+        suggested_exposure = exposure_cfg.get("sell_default", 30)
+    else:
+        suggested_exposure = None
+
     if not reasons:
         reasons.append("各項指標訊號不明顯，暫無明確方向")
 
     return Verdict(conclusion=conclusion, confidence=confidence, score=score,
                     reasons=reasons, caveats=caveats,
-                    volume_breakout_confirmed=triangle_breakout_confirmed)
+                    volume_breakout_confirmed=triangle_breakout_confirmed,
+                    suggested_exposure=suggested_exposure)
 
 
 # ------------------------------------------------------------------
@@ -1186,7 +1276,7 @@ def combine_timeframes(verdicts: Dict[str, Verdict]) -> dict:
 
     detail = {
         tf: {"結論": v.conclusion, "信心": v.confidence, "理由": v.reasons, "但書": v.caveats,
-             "帶量突破": v.volume_breakout_confirmed}
+             "帶量突破": v.volume_breakout_confirmed, "建議曝險": v.suggested_exposure}
         for tf, v in verdicts.items()
     }
 

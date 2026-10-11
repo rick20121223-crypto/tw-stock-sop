@@ -390,31 +390,37 @@ def calc_cci(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 # ------------------------------------------------------------------
 # 8. KD
 # ------------------------------------------------------------------
-def calc_kd(df: pd.DataFrame, period: int = 9) -> pd.DataFrame:
+def calc_kd(df: pd.DataFrame, n: int = 9, m1: int = 3, m2: int = 3,
+            k_col: str = "K", d_col: str = "D") -> pd.DataFrame:
     """
     向量化版本（原本是逐列 Python for 迴圈）。
-    K[i] = K[i-1]*2/3 + RSV[i]/3 這個遞迴式，數學上就是 alpha=1/3 的
+    K[i] = K[i-1]*(1-1/m1) + RSV[i]/m1 這個遞迴式，數學上就是 alpha=1/m1 的
     EWM（指數加權平均，adjust=False）。原本第0筆固定用種子值50（不看
     RSV[0]），所以把序列第0筆換成50再套 EWM，跟原本逐列迴圈的結果
-    完全等價，只是不用真的跑 Python for 迴圈。D 同理，用 K 當輸入。
+    完全等價，只是不用真的跑 Python for 迴圈。D 同理，用 K 當輸入、alpha=1/m2。
+
+    n：RSV回看窗口（舊稱period）。m1：K值平滑權值（RSVt權值）。m2：D值
+    平滑權值（Kt權值）。預設(9,3,3)/K/D欄位是台股軟體慣用的KDJ設定，
+    呼叫端不帶參數時行為跟泛化前完全相同。k_col/d_col讓呼叫端可以同時
+    並存多組不同參數的KD（例如KD(9,3,3)跟KD(36,5,5)），不互相覆蓋。
     """
     df = df.copy()
-    low_min = df["min"].rolling(window=period).min()
-    high_max = df["max"].rolling(window=period).max()
+    low_min = df["min"].rolling(window=n).min()
+    high_max = df["max"].rolling(window=n).max()
     denom = (high_max - low_min).replace(0, np.nan)
     rsv = ((df["close"] - low_min) / denom * 100).fillna(50.0)
 
     if len(df) > 0:
         rsv.iloc[0] = 50.0
-    k = rsv.ewm(alpha=1 / 3, adjust=False).mean()
+    k = rsv.ewm(alpha=1 / m1, adjust=False).mean()
 
     k_seeded = k.copy()
     if len(df) > 0:
         k_seeded.iloc[0] = 50.0
-    d = k_seeded.ewm(alpha=1 / 3, adjust=False).mean()
+    d = k_seeded.ewm(alpha=1 / m2, adjust=False).mean()
 
-    df["K"] = k
-    df["D"] = d
+    df[k_col] = k
+    df[d_col] = d
     return df
 
 
@@ -444,5 +450,6 @@ def run_all_indicators(df: pd.DataFrame, timeframe_label: str = "日") -> pd.Dat
     df = calc_obv(df)
     df = calc_bbi(df)
     df = calc_cci(df)   # CCI，配合MTM作為三代領先指標
-    df = calc_kd(df)
+    df = calc_kd(df)   # 既有 KD(9,3,3) -> K/D 欄位，週線規則(_step2_weekly_kd_golden_cross)用這組
+    df = calc_kd(df, n=36, m1=5, m2=5, k_col="K365", d_col="D365")  # 新增 KD(36,5,5)，供日/60分/5分的Double Check用
     return df
