@@ -1,8 +1,8 @@
 """
 驗證KD(36,5,5)+MACD的Double Check機制，是不是真的比單看MACD背離更可靠。
 
-比較兩組「訊號後N日報酬／下跌比例」：
-    A) 只有MACD頂背離（現有_step3_macd.macd_bearish_divergence單獨成立）
+比較兩組「訊號後N日報酬／下跌比例」，A/B互斥（不重疊）：
+    A) 只有MACD頂背離、KD365沒有死叉（純MACD訊號，沒有Double Check確認）
     B) MACD頂背離 + KD365死亡交叉同時成立（Double Check雙重確認）
 
 用意：B組如果比A組保護力更好（後續下跌比例更高、平均報酬更低），
@@ -26,18 +26,31 @@ import pandas as pd
 
 from backtest_signal_log import FORWARD_WINDOWS, _forward_returns
 from historical_backtest import WARMUP_CALENDAR_DAYS
-from sop_decision import _detect_bearish_divergence, _step_kd365
+from sop_decision import RULES, _detect_bearish_divergence, _step_kd365
 from stock_core import STOCK_NAME_MAP, get_stock_data, run_all_indicators, unique_watchlist
 
 BACKTEST_MONTHS_DEFAULT = 24
 
 
 def _collect_events(df: pd.DataFrame) -> dict:
-    """逐日重建_step3_macd的背離判斷跟_step_kd365的死叉判斷，標出A組/B組的事件日期字串。"""
-    cfg_lookback = 20  # 對應sop_rules.yaml macd.divergence_lookback/kd365.divergence_lookback
+    """逐日重建_step3_macd的背離判斷跟_step_kd365的死叉判斷，標出A組/B組的
+    事件日期字串。A組(macd_only)跟B組(double_check)互斥：A組只算「MACD
+    背離成立、但KD365沒有死叉」的事件，B組算「MACD背離+KD365死叉同時
+    成立」的事件——這樣A/B才是能公平比較的兩群事件，不會B是A的子集合
+    （原本的寫法B永遠是A的子集，系統性低估了Double Check的差異）。
+
+    cfg_lookback直接讀sop_rules.yaml的kd365.divergence_lookback，不寫死
+    常數，確保這支回測腳本永遠跟它驗證的規則參數同步。迴圈起點額外跳過
+    KD365的暖身期（n+m1+m2根K棒）：KD(36,5,5)前面這段K365/D365都還沒有
+    真正的RSV可用、被種子值50.0填滿，太早開始算交叉/背離會拿到假訊號。
+    """
+    kd365_cfg = RULES["indicators"]["kd365"]
+    cfg_lookback = kd365_cfg["divergence_lookback"]
+    warmup_bars = kd365_cfg["n"] + kd365_cfg["m1"] + kd365_cfg["m2"]
+    start = max(cfg_lookback, warmup_bars)
     macd_only_dates, double_check_dates = [], []
 
-    for i in range(cfg_lookback, len(df)):
+    for i in range(start, len(df)):
         window = df.iloc[:i + 1]
         latest = window.iloc[-1]
 
@@ -49,9 +62,10 @@ def _collect_events(df: pd.DataFrame) -> dict:
         _, kd365_cross_down, _ = _step_kd365(window, "日", latest, reasons, caveats)
 
         signal_date = df.iloc[i]["date"]
-        macd_only_dates.append(signal_date)
         if kd365_cross_down:
             double_check_dates.append(signal_date)
+        else:
+            macd_only_dates.append(signal_date)
 
     return {"macd_only": macd_only_dates, "double_check": double_check_dates}
 
@@ -120,7 +134,7 @@ def main() -> None:
         all_double_check.extend(r["double_check_events"])
 
     print(f"\n=== 回測{months_arg}個月，{len(unique_watchlist(STOCK_NAME_MAP))}檔加總 ===\n")
-    _print_stats("A) 只有MACD頂背離", all_macd_only)
+    _print_stats("A) 只有MACD頂背離（KD365未死叉）", all_macd_only)
     print()
     _print_stats("B) MACD頂背離+KD365死亡交叉（Double Check）", all_double_check)
 

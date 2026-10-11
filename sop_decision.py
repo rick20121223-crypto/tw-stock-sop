@@ -1231,9 +1231,14 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     # ---- 建議曝險（5級，待backtest驗證微調，見sop_rules.yaml exposure_rules）----
     # 這一輪刻意不讓這個欄位影響conclusion——只是把但丁老師課程的部位
     # 控管概念，用既有已經算出來的條件變數做映射，不是重新設計一套邏輯。
+    # 週線/月線固定None、不分類：跟「週線與月線完全不動」的範圍限制一致，
+    # 不要讓一個沒人設計過的部位建議附掛在週線輸出上（最終review發現，
+    # 原本的映射邏輯沒有排除週線，週線會意外拿到0/50/70/100其中一個值）。
     exposure_cfg = RULES.get("exposure_rules", {})
     kd365_macd_double_bear = kd365_cross_down and macd_bearish_divergence
-    if hard_sell:
+    if tf == "週":
+        suggested_exposure = None
+    elif hard_sell:
         suggested_exposure = 0
     elif volume_bear_confirm_partial or kd365_macd_double_bear:
         suggested_exposure = 30
@@ -1243,6 +1248,11 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
         suggested_exposure = exposure_cfg.get("watch_support_held", 70)
     elif conclusion in ("買進", "加碼"):
         suggested_exposure = 100
+    elif conclusion == "賣出減碼":
+        # 經score門檻判成賣出減碼、但沒有觸發hard_sell/雙重示警的較弱賣出
+        # 訊號，原本會落到最後的None——一個「賣出減碼」結論卻配「無法
+        # 分類」的曝險建議，使用者看了會當成bug。改給明確的低曝險預設值。
+        suggested_exposure = exposure_cfg.get("sell_default", 30)
     else:
         suggested_exposure = None
 
