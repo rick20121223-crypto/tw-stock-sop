@@ -341,7 +341,10 @@ def _changes_to_plain(changes: list) -> list:
         style = BUCKET_STYLE[c["new"]]
         badge = _source_badge(c.get("source"))
         suffix = f"　[{c['source']}]" if badge else ""
-        lines.append(f"{style['icon']} {badge}{c['name']}（{c['code']}）：{c['prev']} → {c['new']}{suffix}")
+        breakout_suffix = "　📐帶量突破確認" if c.get("breakout") else ""
+        lines.append(
+            f"{style['icon']} {badge}{c['name']}（{c['code']}）：{c['prev']} → {c['new']}{suffix}{breakout_suffix}"
+        )
     return lines
 
 
@@ -354,11 +357,15 @@ def _changes_to_html(changes: list) -> str:
             f'<div style="color:#999; font-size:11px; margin-top:2px;">🔄 {c["source"]}</div>'
             if badge else ""
         )
+        breakout_html = (
+            '<div style="color:#5c6bc0; font-size:12px; margin-top:2px;">📐 帶量突破確認</div>'
+            if c.get("breakout") else ""
+        )
         detail = (
             f'<span style="color:#999;">{c["prev"]}</span>'
             f' <span style="color:#bbb;">→</span> '
             f'<span style="color:{style["color"]}; font-weight:700; font-size:15px;">{c["new"]}</span>'
-            f'{source_html}'
+            f'{source_html}{breakout_html}'
         )
         cards += _card_html(style["icon"], style["color"], style["bg"],
                              f"{c['name']}（{c['code']}）", detail)
@@ -612,15 +619,19 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
 def _check_long(code: str, market: str, api_token: str):
     """
     長期：週+日整合，跟首頁「長線留倉」同一套。
-    回傳 (分類, 收盤, 資料日期, 錯誤訊息)——資料日期是日K最後一根的實際
-    交易日，用來讓 signal_log.csv 記錄真正的交易日而不是呼叫當下的系統
-    日期（見 append_signal_log()）。
+    回傳 (分類, 收盤, 資料日期, 是否帶量突破確認, 錯誤訊息)——資料日期是日K
+    最後一根的實際交易日，用來讓 signal_log.csv 記錄真正的交易日而不是
+    呼叫當下的系統日期（見 append_signal_log()）。「帶量突破確認」只要任一
+    週期的三角收斂帶量突破事件成立就算True（見sop_decision.py Verdict.
+    volume_breakout_confirmed），純粹讀取既有判讀結果附帶的旗標，不影響
+    分類本身。
     """
     try:
         result = full_check(code, market, api_token, "", "2024-01-01")
-        return classify_final(result["最終建議"]), result.get("收盤"), result.get("資料日期"), None
+        breakout = any(d.get("帶量突破") for d in result.get("各週期明細", {}).values())
+        return classify_final(result["最終建議"]), result.get("收盤"), result.get("資料日期"), breakout, None
     except Exception as exc:  # noqa: BLE001
-        return None, None, None, str(exc)
+        return None, None, None, False, str(exc)
 
 
 def _check_holding(code: str, market: str):
@@ -756,12 +767,12 @@ def main() -> None:
     check_contract_liability_today = _is_monday_in_taiwan()
 
     def _check_one(name, code, market, source):
-        long_bucket, long_close, long_date, long_err = _check_long(code, market, api_token)
+        long_bucket, long_close, long_date, long_breakout, long_err = _check_long(code, market, api_token)
         short_bucket, short_close, short_err = _check_short(code, market, fugle_api_key)
         holding = _check_holding(code, market)
         contract_liability = _check_contract_liability(
             code, market, api_token, check_contract_liability_today)
-        return (name, code, market, source, long_bucket, long_close, long_date, long_err,
+        return (name, code, market, source, long_bucket, long_close, long_date, long_breakout, long_err,
                 short_bucket, short_close, short_err, holding, contract_liability)
 
     watchlist = full_watchlist()
@@ -771,7 +782,7 @@ def main() -> None:
             for name, code, market, source in watchlist
         ]
         for future in concurrent.futures.as_completed(futures):
-            (name, code, market, source, long_bucket, long_close, long_date, long_err,
+            (name, code, market, source, long_bucket, long_close, long_date, long_breakout, long_err,
              short_bucket, short_close, short_err, holding, contract_liability) = future.result()
 
             if long_err is not None:
@@ -803,7 +814,8 @@ def main() -> None:
             if prev:
                 if prev.get("長期") and prev["長期"] != long_bucket:
                     long_changes.append({"name": name, "code": code, "market": market, "source": source,
-                                          "prev": prev["長期"], "new": long_bucket, "close": long_close})
+                                          "prev": prev["長期"], "new": long_bucket, "close": long_close,
+                                          "breakout": long_breakout})
                 if short_bucket is not None and prev.get("短期") and prev["短期"] != short_bucket:
                     short_changes.append({"name": name, "code": code, "market": market, "source": source,
                                            "prev": prev["短期"], "new": short_bucket, "close": short_close})

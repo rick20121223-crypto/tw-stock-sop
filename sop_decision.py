@@ -51,6 +51,7 @@ class Verdict:
     score: float
     reasons: List[str] = field(default_factory=list)
     caveats: List[str] = field(default_factory=list)
+    volume_breakout_confirmed: bool = False  # 三角收斂帶量突破確認（見_detect_triangle_consolidation）
 
 
 # ------------------------------------------------------------------
@@ -1025,6 +1026,7 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     m_top_neckline = _detect_m_top(df, fast_slope_down, macd_bias, reasons)
     triangle = _detect_triangle_consolidation(df, tf, reasons, caveats)
     triangle_force_watch = triangle["active"] and not triangle["volume_confirmed"]
+    triangle_breakout_confirmed = bool(triangle["active"] and triangle["volume_confirmed"])
 
     platform_bias = _step6_left_side_platform(
         df, tf, latest, fast_slope_up, reasons, caveats,
@@ -1169,7 +1171,8 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
         reasons.append("各項指標訊號不明顯，暫無明確方向")
 
     return Verdict(conclusion=conclusion, confidence=confidence, score=score,
-                    reasons=reasons, caveats=caveats)
+                    reasons=reasons, caveats=caveats,
+                    volume_breakout_confirmed=triangle_breakout_confirmed)
 
 
 # ------------------------------------------------------------------
@@ -1182,7 +1185,8 @@ def combine_timeframes(verdicts: Dict[str, Verdict]) -> dict:
         return {"最終建議": "資料不足，無法判讀", "各週期明細": {}}
 
     detail = {
-        tf: {"結論": v.conclusion, "信心": v.confidence, "理由": v.reasons, "但書": v.caveats}
+        tf: {"結論": v.conclusion, "信心": v.confidence, "理由": v.reasons, "但書": v.caveats,
+             "帶量突破": v.volume_breakout_confirmed}
         for tf, v in verdicts.items()
     }
 
