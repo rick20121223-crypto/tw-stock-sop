@@ -49,7 +49,7 @@ import youtube_stock_mentions as ytm
 from contract_liability import compute_latest_change, fetch_contract_liability_trend
 from holding_shares import compute_consecutive_signals, fetch_major_holder_trend
 from multi_timeframe_check import full_check
-from sop_decision import classify_final, combine_timeframes, evaluate_timeframe
+from sop_decision import RULES, classify_final, combine_timeframes, evaluate_timeframe
 from tw_time import taiwan_today
 from stock_core import get_intraday_data, run_all_indicators, unique_watchlist
 
@@ -434,6 +434,61 @@ def _contract_liability_to_html(rows: list) -> str:
     return cards
 
 
+def _code_to_industry_group() -> Dict[str, str]:
+    groups = RULES.get("industry_groups", {})
+    return {code: group for group, codes in groups.items() for code in codes}
+
+
+def _industry_group_alerts(long_changes: list, watchlist: list) -> list:
+    """
+    long_changes裡「新狀態是買進/加碼」的股票，若屬於sop_rules.yaml
+    industry_groups裡的某個產業族群，就找同族群、且目前也在watchlist
+    內的其他股票，列成提示（純列名單，不判讀該股票自己的訊號狀態，見
+    sop_rules.yaml industry_groups區塊註解）。
+    """
+    code_to_group = _code_to_industry_group()
+    watchlist_by_code: Dict[str, str] = {code: name for name, code, _market, _source in watchlist}
+    groups = RULES.get("industry_groups", {})
+
+    alerts = []
+    for c in long_changes:
+        if c["new"] not in ("買進", "加碼"):
+            continue
+        group = code_to_group.get(c["code"])
+        if not group:
+            continue
+        peers = [
+            (watchlist_by_code[peer_code], peer_code)
+            for peer_code in groups[group]
+            if peer_code != c["code"] and peer_code in watchlist_by_code
+        ]
+        if peers:
+            alerts.append({"name": c["name"], "code": c["code"], "new": c["new"],
+                            "group": group, "peers": peers})
+    return alerts
+
+
+def _industry_group_to_plain(alerts: list) -> list:
+    lines = []
+    for a in alerts:
+        peers_text = "、".join(f"{name}（{code}）" for name, code in a["peers"])
+        lines.append(f"🔗 {a['name']}（{a['code']}）觸發{a['new']}　→　同族群（{a['group']}）觀察：{peers_text}")
+    return lines
+
+
+def _industry_group_to_html(alerts: list) -> str:
+    cards = ""
+    for a in alerts:
+        peers_text = "、".join(f"{name}（{code}）" for name, code in a["peers"])
+        detail = (
+            f'<span style="color:#999; font-size:12px;">族群：{a["group"]}</span><br/>'
+            f'<span style="color:#333;">同族群觀察：{peers_text}</span>'
+        )
+        cards += _card_html("🔗", "#5c6bc0", "#eef0fb",
+                             f"{a['name']}（{a['code']}）觸發{a['new']}", detail)
+    return cards
+
+
 def _summarize_errors(errors: list) -> list:
     """
     把「Fugle 429 Rate limit」這種同一原因、常常一次影響一大串股票的錯誤，
@@ -516,6 +571,7 @@ def _narrative_summary_html(summary: str) -> str:
 
 def build_change_email(today: str, long_changes: list, short_changes: list,
                         holding_changes: list, contract_liability_rising: list,
+                        industry_group_alerts: list,
                         errors: list) -> tuple:
     errors = _summarize_errors(errors)
     summary = _build_narrative_summary(long_changes, short_changes, holding_changes,
@@ -531,6 +587,8 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
         plain_lines += ["", "🏦 大股東(>400張)持股動向：", ""] + _holding_changes_to_plain(holding_changes)
     if contract_liability_rising:
         plain_lines += ["", "📈 合約負債上升中（每週一提醒）：", ""] + _contract_liability_to_plain(contract_liability_rising)
+    if industry_group_alerts:
+        plain_lines += ["", "🔗 族群聯動提示：", ""] + _industry_group_to_plain(industry_group_alerts)
     if errors:
         plain_lines += ["", "⚠️ 以下股票資料取得失敗："] + errors
     plain = "\n".join(plain_lines)
@@ -540,6 +598,7 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
     html_body += _section_html(HORIZON_LABEL["短期"] + "異動", _changes_to_html(short_changes))
     html_body += _section_html("🏦 大股東(>400張)持股動向", _holding_changes_to_html(holding_changes))
     html_body += _section_html("📈 合約負債上升中（每週一提醒）", _contract_liability_to_html(contract_liability_rising))
+    html_body += _section_html("🔗 族群聯動提示", _industry_group_to_html(industry_group_alerts))
     if errors:
         err_html = "".join(f"<div>⚠️ {e}</div>" for e in errors)
         html_body += (
@@ -705,10 +764,11 @@ def main() -> None:
         return (name, code, market, source, long_bucket, long_close, long_date, long_err,
                 short_bucket, short_close, short_err, holding, contract_liability)
 
+    watchlist = full_watchlist()
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
             executor.submit(_check_one, name, code, market, source)
-            for name, code, market, source in full_watchlist()
+            for name, code, market, source in watchlist
         ]
         for future in concurrent.futures.as_completed(futures):
             (name, code, market, source, long_bucket, long_close, long_date, long_err,
@@ -786,12 +846,14 @@ def main() -> None:
             print("以下股票取得資料失敗：\n" + "\n".join(errors))
         return
 
+    industry_group_alerts = _industry_group_alerts(long_changes, watchlist)
+
     long_changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
     short_changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
     holding_changes.sort(key=lambda c: 0 if c["direction"] == "上升" else 1)
     contract_liability_rising.sort(key=lambda c: c.get("pct_change") or 0, reverse=True)
     plain, html = build_change_email(today, long_changes, short_changes, holding_changes,
-                                      contract_liability_rising, errors)
+                                      contract_liability_rising, industry_group_alerts, errors)
     print(plain)
     send_email(f"[但丁股票SOP] 訊號異動通知（{today}）", plain, html, gmail_address, gmail_app_password)
 
