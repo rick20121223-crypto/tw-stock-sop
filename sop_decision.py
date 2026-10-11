@@ -230,8 +230,8 @@ def _step2_60min_turtle_confirm(df: pd.DataFrame, tf: str, latest: pd.Series,
 # 簡化版頂背離偵測：近期股價創高，但 MACD 柱狀圖高點未同步創高。
 # 這是簡化偵測，非教科書式嚴謹型態辨識，僅供參考。
 # ------------------------------------------------------------------
-def _detect_bearish_divergence(df: pd.DataFrame, lookback: int) -> bool:
-    if len(df) < lookback or "MACD_hist" not in df.columns:
+def _detect_bearish_divergence(df: pd.DataFrame, lookback: int, column: str = "MACD_hist") -> bool:
+    if len(df) < lookback or column not in df.columns:
         return False
     window = df.tail(lookback).reset_index(drop=True)
     half = lookback // 2
@@ -243,13 +243,13 @@ def _detect_bearish_divergence(df: pd.DataFrame, lookback: int) -> bool:
     recent_peak_idx = recent["close"].idxmax()
     prior_peak_close = prior.loc[prior_peak_idx, "close"]
     recent_peak_close = recent.loc[recent_peak_idx, "close"]
-    prior_peak_hist = prior.loc[prior_peak_idx, "MACD_hist"]
-    recent_peak_hist = recent.loc[recent_peak_idx, "MACD_hist"]
+    prior_peak_val = prior.loc[prior_peak_idx, column]
+    recent_peak_val = recent.loc[recent_peak_idx, column]
 
-    if pd.isna(prior_peak_hist) or pd.isna(recent_peak_hist):
+    if pd.isna(prior_peak_val) or pd.isna(recent_peak_val):
         return False
 
-    return recent_peak_close > prior_peak_close and recent_peak_hist < prior_peak_hist
+    return recent_peak_close > prior_peak_close and recent_peak_val < prior_peak_val
 
 
 # ------------------------------------------------------------------
