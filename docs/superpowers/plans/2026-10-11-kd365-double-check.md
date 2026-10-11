@@ -395,7 +395,10 @@ def test_dead_cross() -> None:
 
 
 def test_bearish_divergence() -> None:
-    n = 40
+    # n要跟sop_rules.yaml kd365.divergence_lookback(20)一致：
+    # _detect_bearish_divergence()只看df.tail(lookback)這個窗口，n=40配
+    # lookback=20會把前半峰值(index 10)切在窗口外，永遠偵測不到背離。
+    n = 20
     close = np.linspace(100, 110, n)
     close[n // 4] = 115
     close[-1] = 120
