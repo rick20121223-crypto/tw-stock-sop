@@ -298,6 +298,59 @@ def _step3_macd(df: pd.DataFrame, latest: pd.Series,
 
 
 # ------------------------------------------------------------------
+# Step 3.5：KD(36,5,5) Double Check（但丁老師課程新增的第三代指標）
+# 只適用日/60分/5分，呼叫端須在tf != "週"時才呼叫這個函式——週線維持
+# 既有_step2_weekly_kd_golden_cross用的KD(9,3,3)，不套這組參數
+# （見sop_rules.yaml kd365區塊註解）。這一輪刻意不讓kd365_bias進評分
+# 公式、不讓kd365_cross_down/kd365_bearish_divergence否決conclusion，
+# 只用於reasons/caveats文字與suggested_exposure的計算，等
+# test_kd365_double_check.py回測驗證過才考慮讓它影響conclusion本身。
+# ------------------------------------------------------------------
+def _step_kd365(df: pd.DataFrame, tf: str, latest: pd.Series,
+                 reasons: List[str], caveats: List[str]) -> tuple:
+    """回傳 (kd365_bias: float, kd365_cross_down: bool, kd365_bearish_divergence: bool)"""
+    cfg = RULES["indicators"]["kd365"]
+    kd365_bias = 0.0
+    kd365_cross_down = False
+
+    if pd.isna(latest.get("K365")) or pd.isna(latest.get("D365")):
+        caveats.append("KD(36,5,5) 資料不足")
+        return kd365_bias, False, False
+
+    k, d = latest["K365"], latest["D365"]
+
+    if len(df) >= 2:
+        prev = df.iloc[-2]
+        if pd.notna(prev.get("K365")) and pd.notna(prev.get("D365")):
+            golden = prev["K365"] <= prev["D365"] and k > d
+            dead = prev["K365"] >= prev["D365"] and k < d
+            if golden:
+                kd365_bias += cfg["golden_cross_bonus"]
+                reasons.append("KD(36,5,5) 出現黃金交叉")
+            elif dead:
+                kd365_bias += cfg["dead_cross_penalty"]
+                kd365_cross_down = True
+                reasons.append("KD(36,5,5) 出現死亡交叉")
+
+    high_th = cfg["blunted_threshold_high"]
+    low_th = cfg["blunted_threshold_low"]
+    blunted_bars = cfg["blunted_min_bars"]
+    if len(df) >= blunted_bars:
+        recent_k = df["K365"].tail(blunted_bars)
+        if recent_k.notna().all() and (recent_k > high_th).all():
+            reasons.append(f"KD(36,5,5) 連續{blunted_bars}根K棒維持高檔鈍化（>{high_th}）")
+        elif recent_k.notna().all() and (recent_k < low_th).all():
+            reasons.append(f"KD(36,5,5) 連續{blunted_bars}根K棒維持低檔鈍化（<{low_th}）")
+
+    kd365_bearish_divergence = _detect_bearish_divergence(
+        df, cfg["divergence_lookback"], column="K365")
+    if kd365_bearish_divergence:
+        reasons.append("⚠️ KD(36,5,5) 出現頂背離跡象（股價創高、K值未同步創高），先提高警覺")
+
+    return kd365_bias, kd365_cross_down, kd365_bearish_divergence
+
+
+# ------------------------------------------------------------------
 # Step 4：量能驗證（日/週/60分用 OBV，5分因OBV易鈍化改用BBI）
 # ------------------------------------------------------------------
 def _step4_volume(df: pd.DataFrame, tf: str, latest: pd.Series, macd_bearish_divergence: bool,

@@ -75,6 +75,22 @@ indicators:
     golden_cross_above_zero_bonus: 2     # 零軸上黃金交叉，動能轉強
     dead_cross_penalty: -2               # 死亡交叉
 
+  kd365:
+    # 但丁老師課程新增的第三代指標，跟MACD做Double Check。課程筆記原本
+    # 寫「365」，經券商App參數截圖比對確認為「KD-隨機指標(常用)」預設：
+    # 期間36／RSVt權值5／Kt權值5，不是單一個period=365的數字。
+    # 只適用日/60分/5分，週線與月線維持原本的KD(9,3,3)（weekly_kd_
+    # golden_cross規則），不套用這組參數。
+    n: 36
+    m1: 5
+    m2: 5
+    golden_cross_bonus: 1       # 待backtest驗證微調的初始值
+    dead_cross_penalty: -1      # 待backtest驗證微調的初始值
+    blunted_threshold_high: 80  # K值連續N根高於此視為高檔鈍化
+    blunted_threshold_low: 20   # K值連續N根低於此視為低檔鈍化
+    blunted_min_bars: 3         # 待backtest驗證微調的初始值
+    divergence_lookback: 20     # 比照macd.divergence_lookback
+
   volume:
     rising_bonus: 1     # OBV均線（或5分線用BBI）上揚
     falling_penalty: -1 # OBV均線（或5分線用BBI）下彎
