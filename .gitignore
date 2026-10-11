@@ -9,3 +9,6 @@ _fugle_probe.py
 # 報告，不是像 signal_log.csv 那種由排程自動累積的狀態，不需要進版控
 data/signal_backtest.csv
 data/historical_backtest.csv
+
+# 真實持股成本/股數（停損規則用），repo是公開的，這份資料不可進版控
+data/my_holdings.csv
