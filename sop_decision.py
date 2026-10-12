@@ -561,7 +561,7 @@ def _cluster_pivot_levels(pivots: pd.Series, tolerance: float, min_touches: int)
 #     強制降級為觀望（見 watch_rules.triangle_consolidation_downgrade）。
 # ------------------------------------------------------------------
 def _detect_w_bottom(df: pd.DataFrame, fast_slope_up: bool, macd_bias: float,
-                      reasons: List[str]) -> Optional[float]:
+                      kd365_bullish: bool, reasons: List[str]) -> Optional[float]:
     cfg = RULES.get("pattern_recognition", {}).get("w_bottom", {})
     if not cfg.get("enabled", True):
         return None
@@ -607,17 +607,17 @@ def _detect_w_bottom(df: pd.DataFrame, fast_slope_up: bool, macd_bias: float,
             and latest["close"] > latest["open"]):
         return None  # 還沒出現回測不破後的確認紅K，先不觸發提醒
 
-    synced = fast_slope_up and macd_bias > 0
+    synced = fast_slope_up and macd_bias > 0 and kd365_bullish
     if synced:
         reasons.append(
             f"📐 偵測到W底型態（左底約{left_low:.2f}／右底約{right_low:.2f}，頸線約{neckline:.2f}），"
-            "回測頸線不破後收紅K，且均線斜率與MACD同步轉多，轉折訊號確認"
+            "回測頸線不破後收紅K，且均線斜率、MACD、KD(36,5,5)三者同步轉多，轉折訊號確認"
             "（輔助提醒，結論仍以四關價/均線/MACD/OBV分層否決制為準）"
         )
     else:
         reasons.append(
             f"📐 偵測到W底型態（左底約{left_low:.2f}／右底約{right_low:.2f}，頸線約{neckline:.2f}），"
-            "回測頸線不破後收紅K，但均線斜率/MACD尚未同步轉多，標記為「型態轉折待確認」"
+            "回測頸線不破後收紅K，但均線斜率/MACD/KD(36,5,5)尚未同步轉多，標記為「型態轉折待確認」"
             "（僅供觀察，非買進依據）"
         )
     return neckline
@@ -1083,7 +1083,17 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     # ---- 型態學輔助觸發層（見 sop_rules.yaml pattern_recognition）----
     # 只附加提醒/頸線候選，不直接產生買賣結論；三角收斂的強制觀望在下方
     # 與其他 watch_rules 降級規則一起套用。
-    w_bottom_neckline = _detect_w_bottom(df, fast_slope_up, macd_bias, reasons)
+    # KD365目前是否處於多頭排列（K365>D365），用「目前狀態」風格跟
+    # macd_bias>0同一個概念，不是「今天剛好黃金交叉」這種事件——W底確認
+    # 紅K那天，KD365可能是前幾天就黃金交叉、之後維持多頭排列，不一定
+    # 剛好跟確認紅K同一天交叉。排除週線，跟KD365系列既有規則（週線維持
+    # 原本KD(9,3,3)）一致。
+    kd365_bullish = (
+        tf != "週"
+        and pd.notna(latest.get("K365")) and pd.notna(latest.get("D365"))
+        and latest["K365"] > latest["D365"]
+    )
+    w_bottom_neckline = _detect_w_bottom(df, fast_slope_up, macd_bias, kd365_bullish, reasons)
     m_top_neckline = _detect_m_top(df, fast_slope_down, macd_bias, reasons)
     triangle = _detect_triangle_consolidation(df, tf, reasons, caveats)
     triangle_force_watch = triangle["active"] and not triangle["volume_confirmed"]
