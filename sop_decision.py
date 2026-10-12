@@ -1125,11 +1125,26 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     volume_bear_confirm_for_hard_sell = (
         volume_bear_confirm_ma_synced if volume_bear_confirm_requires_ma_sync else volume_bear_confirm
     )
+    # ---- KD365 Double Check（賣出側）：MACD死叉+KD365死叉+生死線斜率
+    # 轉下彎，同時成立時否決conclusion，視同hard_sell位階。key_slope_down
+    # 故意不重用key_ma_down_veto——後者還要求股價已跌破生死線，比這裡
+    # 實際驗證過的條件（純粹看斜率方向）更嚴格，見sop_rules.yaml
+    # kd365_veto_enabled區塊註解與對應回測（test_kd365_double_check.py）。
+    kd365_veto_enabled = sell_cfg.get("kd365_veto_enabled", True)
+    key_slope_down = ma_slope(df, KEY_MA[tf], lookback=slope_lookback) == "下彎"
+    kd365_double_check_confirmed = dead_cross and kd365_cross_down and key_slope_down
+    if kd365_double_check_confirmed:
+        reasons.append(
+            "⚠️ KD(36,5,5)死叉 + MACD死叉（Double Check）同時成立，且生死線已轉"
+            "下彎，課程定義的「必須離場」等級"
+        )
+
     hard_sell = (
         (key_ma_down_veto and sell_cfg.get("key_ma_down_veto", True))
         or (four_key_broken and sell_cfg.get("four_key_broken", True))
         or (dead_cross_confirmed and sell_cfg.get("dead_cross_confirmed", True))
         or (volume_bear_confirm_for_hard_sell and sell_cfg.get("volume_bear_confirm", True))
+        or (kd365_double_check_confirmed and kd365_veto_enabled)
     )
     # 待驗證（2026-10-08）：test_leading_indicator_protective_value.py用13檔
     # 60分K(約120天)比較四類降級訊號觸發後的保護力，結果跟SOP位階預設的
