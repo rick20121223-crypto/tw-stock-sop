@@ -560,6 +560,25 @@ def _cluster_pivot_levels(pivots: pd.Series, tolerance: float, min_touches: int)
 #   - 三角收斂：回傳目前狀態供 evaluate_timeframe() 決定是否要把買進/加碼
 #     強制降級為觀望（見 watch_rules.triangle_consolidation_downgrade）。
 # ------------------------------------------------------------------
+def _kd365_crossed_up_recently(df: pd.DataFrame, window: int) -> bool:
+    """檢查K365是否在最近window個交易日內（含今天）黃金交叉D365（前一天
+    K<=D、當天K>D）。用來判斷W底突破當下KD365是不是「剛好同步轉強」，
+    不是「已經維持多頭一陣子」——2026-10-13 backtest(test_kd365_w_bottom_
+    buy.py)驗證過這個「剛交叉」版本才有實際預測力，「目前狀態」版本
+    （K365>D365現在是不是成立）沒有證據支持，所以這裡故意不是單純比較
+    latest一筆的K365/D365（見sop_rules.yaml kd365.w_bottom_fresh_cross_
+    window區塊註解）。"""
+    if len(df) < 2:
+        return False
+    start = max(1, len(df) - window)
+    for i in range(start, len(df)):
+        prev, cur = df.iloc[i - 1], df.iloc[i]
+        pk, pd_ = prev.get("K365"), prev.get("D365")
+        ck, cd = cur.get("K365"), cur.get("D365")
+        if pd.notna(pk) and pd.notna(pd_) and pd.notna(ck) and pd.notna(cd):
+            if pk <= pd_ and ck > cd:
+                return True
+    return False
 def _detect_w_bottom(df: pd.DataFrame, fast_slope_up: bool, macd_bias: float,
                       kd365_bullish: bool, reasons: List[str]) -> Optional[float]:
     cfg = RULES.get("pattern_recognition", {}).get("w_bottom", {})
@@ -1083,16 +1102,13 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     # ---- 型態學輔助觸發層（見 sop_rules.yaml pattern_recognition）----
     # 只附加提醒/頸線候選，不直接產生買賣結論；三角收斂的強制觀望在下方
     # 與其他 watch_rules 降級規則一起套用。
-    # KD365目前是否處於多頭排列（K365>D365），用「目前狀態」風格跟
-    # macd_bias>0同一個概念，不是「今天剛好黃金交叉」這種事件——W底確認
-    # 紅K那天，KD365可能是前幾天就黃金交叉、之後維持多頭排列，不一定
-    # 剛好跟確認紅K同一天交叉。排除週線，跟KD365系列既有規則（週線維持
-    # 原本KD(9,3,3)）一致。
-    kd365_bullish = (
-        tf != "週"
-        and pd.notna(latest.get("K365")) and pd.notna(latest.get("D365"))
-        and latest["K365"] > latest["D365"]
-    )
+    # KD365最近是否「剛黃金交叉」（不是「目前是不是多頭狀態」）——
+    # 2026-10-13 backtest驗證過兩種操作化方式：「目前狀態」版沒有證據
+    # 支持，「剛交叉」版三個天期都明顯勝出，見sop_rules.yaml kd365.
+    # w_bottom_fresh_cross_window區塊註解。排除週線，跟KD365系列既有
+    # 規則（週線維持原本KD(9,3,3)）一致。
+    kd365_bullish = tf != "週" and _kd365_crossed_up_recently(
+        df, RULES["indicators"]["kd365"]["w_bottom_fresh_cross_window"])
     w_bottom_neckline = _detect_w_bottom(df, fast_slope_up, macd_bias, kd365_bullish, reasons)
     m_top_neckline = _detect_m_top(df, fast_slope_down, macd_bias, reasons)
     triangle = _detect_triangle_consolidation(df, tf, reasons, caveats)

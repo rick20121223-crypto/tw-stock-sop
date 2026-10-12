@@ -123,6 +123,13 @@ indicators:
     blunted_threshold_low: 20   # K值連續N根低於此視為低檔鈍化
     blunted_min_bars: 3         # 待backtest驗證微調的初始值
     divergence_lookback: 20     # 比照macd.divergence_lookback
+    w_bottom_fresh_cross_window: 3
+    # 2026-10-13：W底偵測用的KD365確認，從「目前狀態是不是多頭」改成
+    # 「最近N個交易日內是不是剛黃金交叉」——backtest(test_kd365_w_bottom_
+    # buy.py)比較過兩種操作化方式：「目前狀態」版完全沒證據支持（21檔/
+    # 24個月，不同步那組報酬反而更高）；「剛交叉」版三個天期都明顯勝出
+    # （5日/10日/20日平均報酬與上漲比例都更高）。3天比照left_side_
+    # platform/cci既有confirm_bars=3的慣例，非另外驗證過的精確數字。
 
   volume:
     rising_bonus: 1     # OBV均線（或5分線用BBI）上揚
