@@ -203,11 +203,19 @@ def _is_etf(code: str) -> bool:
     return code.startswith("00")
 
 
+def _is_warrant(code: str) -> bool:
+    """台股權證（認購/認售）代碼一律是6碼（數字或數字+字母尾碼，例如
+    066186、03735B），一般個股代碼是4碼、ETF是「00」開頭4-6碼（已由
+    _is_etf 排除）。權證不適用股票的四關價/均線/MACD結構判讀，且交易
+    特性（隨到期日耗損時間價值）跟一般個股買賣超訊號無法比較，故排除。"""
+    return len(code) >= 6 and not code.startswith("00")
+
+
 def compute_weekly_top(reference_date: date, exclude_codes: set, top_n: int = TOP_N) -> dict:
     """
     排出「買超前top_n + 賣超前top_n」，跳過已經在 exclude_codes（現有固定
-    清單的代碼）裡的股票、以及ETF（見 _is_etf），確保排行選出的都是清單
-    外、有代表性的個股新面孔。
+    清單的代碼）裡的股票、以及ETF/權證（見 _is_etf、_is_warrant），確保
+    排行選出的都是清單外、有代表性的個股新面孔。
     """
     totals = aggregate_week(reference_date)
 
@@ -218,7 +226,7 @@ def compute_weekly_top(reference_date: date, exclude_codes: set, top_n: int = TO
     # 賣超榜（自相矛盾）。這裡先合併加總，確保每檔代碼最終只歸屬其中一邊。
     merged: Dict[str, dict] = {}
     for (code, _src), v in totals.items():
-        if code in exclude_codes or _is_etf(code):
+        if code in exclude_codes or _is_etf(code) or _is_warrant(code):
             continue
         entry = merged.setdefault(code, {"name": v["name"], "net": 0, "days": 0})
         entry["net"] += v["net"]
