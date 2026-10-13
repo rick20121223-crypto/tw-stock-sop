@@ -20,7 +20,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import yaml
@@ -580,7 +580,7 @@ def _kd365_crossed_up_recently(df: pd.DataFrame, window: int) -> bool:
                 return True
     return False
 def _detect_w_bottom(df: pd.DataFrame, fast_slope_up: bool, macd_bias: float,
-                      kd365_bullish: bool, reasons: List[str]) -> Optional[float]:
+                      kd365_bullish: bool, reasons: List[str]) -> Optional[Tuple[float, bool]]:
     cfg = RULES.get("pattern_recognition", {}).get("w_bottom", {})
     if not cfg.get("enabled", True):
         return None
@@ -639,7 +639,7 @@ def _detect_w_bottom(df: pd.DataFrame, fast_slope_up: bool, macd_bias: float,
             "回測頸線不破後收紅K，但均線斜率/MACD/KD(36,5,5)尚未同步轉多，標記為「型態轉折待確認」"
             "（僅供觀察，非買進依據）"
         )
-    return neckline
+    return neckline, synced
 
 
 def _detect_m_top(df: pd.DataFrame, fast_slope_down: bool, macd_bias: float,
@@ -1109,7 +1109,9 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     # 規則（週線維持原本KD(9,3,3)）一致。
     kd365_bullish = tf != "週" and _kd365_crossed_up_recently(
         df, RULES["indicators"]["kd365"]["w_bottom_fresh_cross_window"])
-    w_bottom_neckline = _detect_w_bottom(df, fast_slope_up, macd_bias, kd365_bullish, reasons)
+    w_bottom_result = _detect_w_bottom(df, fast_slope_up, macd_bias, kd365_bullish, reasons)
+    w_bottom_neckline = w_bottom_result[0] if w_bottom_result else None
+    w_bottom_pending = bool(w_bottom_result) and not w_bottom_result[1]
     m_top_neckline = _detect_m_top(df, fast_slope_down, macd_bias, reasons)
     triangle = _detect_triangle_consolidation(df, tf, reasons, caveats)
     triangle_force_watch = triangle["active"] and not triangle["volume_confirmed"]
@@ -1248,6 +1250,12 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     # ---- 型態學輔助觸發層：三角收斂尚未帶量突破（或假突破）→ 買進/加碼強制降級觀望，
     # 不凌駕生死線下彎/四關價破底等硬否決產生的「賣出減碼」----
     if triangle_force_watch and watch_cfg.get("triangle_consolidation_downgrade", True) \
+            and conclusion in ("買進", "加碼"):
+        conclusion = "觀望"
+
+    # ---- 型態學輔助觸發層：W底尚未經均線/MACD/KD365同步確認 → 買進/加碼
+    # 強制降級觀望，不凌駕生死線下彎/四關價破底等硬否決產生的「賣出減碼」----
+    if w_bottom_pending and watch_cfg.get("w_bottom_kd365_downgrade", True) \
             and conclusion in ("買進", "加碼"):
         conclusion = "觀望"
 
