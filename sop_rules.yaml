@@ -238,6 +238,14 @@ watch_rules:
   triangle_consolidation_downgrade: true  # 三角收斂尚未帶量突破（或假突破）→ 買進/加碼一律降級觀望，
                                            # 不凌駕生死線下彎/四關價破底等硬否決產生的「賣出減碼」
                                            # （見下方 pattern_recognition.triangle_consolidation）
+  w_bottom_kd365_downgrade: true  # W底型態偵測到、但均線/MACD/KD(36,5,5)尚未同步確認
+                                   # （reasons顯示「型態轉折待確認」）→ 買進/加碼一律降級觀望，
+                                   # 不凌駕生死線下彎/四關價破底等硬否決產生的「賣出減碼」。
+                                   # 2026-10-13新增，依據test_kd365_w_bottom_buy.py回測（21檔/
+                                   # 24個月）：KD365剛黃金交叉(3日內)比非剛交叉在5/10/20日
+                                   # 三個天期報酬與上漲比例都明顯更好（詳見kd365.
+                                   # w_bottom_fresh_cross_window區塊註解），設為false可隨時
+                                   # 關掉、不用改程式碼。
 
   # 新規則①：買進/加碼的三項同時條件，任一項未確認就一律觀望，
   # 不可輸出「買進（部分週期訊號仍待確認）」這類模糊結論。
