@@ -74,6 +74,9 @@ if triangle_force_watch and watch_cfg.get("triangle_consolidation_downgrade", Tr
 macd_bias > 0 and kd365_bullish`），外部重算等於維護兩份邏輯，之後改
 條件容易漏改一邊。
 
+注意：`sop_decision.py`目前`from typing import Dict, List, Optional`
+（第23行）沒有`Tuple`，這次要補上`Tuple`。
+
 ```python
 def _detect_w_bottom(df: pd.DataFrame, fast_slope_up: bool, macd_bias: float,
                       kd365_bullish: bool, reasons: List[str]) -> Optional[Tuple[float, bool]]:
