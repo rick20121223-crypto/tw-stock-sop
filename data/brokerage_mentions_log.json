@@ -721,5 +721,176 @@
         "target_price": "2710"
       }
     ]
+  },
+  {
+    "date": "2026-10-07",
+    "firm": "Citi",
+    "label": "國巨財報快報",
+    "picks": [
+      {
+        "code": "2327",
+        "name": "國巨",
+        "rating": "Buy",
+        "target_price": "1450"
+      }
+    ]
+  },
+  {
+    "date": "2026-10-13",
+    "firm": "MorganStanley",
+    "label": "大立光評等調升",
+    "picks": [
+      {
+        "code": "3008",
+        "name": "大立光",
+        "rating": "Overweight",
+        "target_price": "7325"
+      }
+    ]
+  },
+  {
+    "date": "2026-10-11",
+    "firm": "MorganStanley",
+    "label": "光寶科9月營收",
+    "picks": [
+      {
+        "code": "2301",
+        "name": "光寶科",
+        "rating": "EqualWeight",
+        "target_price": "315"
+      }
+    ]
+  },
+  {
+    "date": "2026-10-12",
+    "firm": "Daiwa",
+    "label": "南亞科3Q26財報",
+    "picks": []
+  },
+  {
+    "date": "2026-10-12",
+    "firm": "MorganStanley",
+    "label": "台達電9月營收",
+    "picks": [
+      {
+        "code": "2308",
+        "name": "台達電",
+        "rating": "Overweight",
+        "target_price": "2500"
+      }
+    ]
+  },
+  {
+    "date": "2026-10-07",
+    "firm": "Daiwa",
+    "label": "ACTER雅特初次覆蓋",
+    "picks": [
+      {
+        "code": "5536",
+        "name": "雅特",
+        "rating": "Buy",
+        "target_price": "1415"
+      }
+    ]
+  },
+  {
+    "date": "2026-10-08",
+    "firm": "MorganStanley",
+    "label": "CPO測試封裝供應鏈報告",
+    "picks": [
+      {
+        "code": "7769",
+        "name": "鴻勁精密",
+        "rating": "Overweight",
+        "target_price": "10008"
+      },
+      {
+        "code": "6223",
+        "name": "MPI",
+        "rating": "Overweight",
+        "target_price": "8000"
+      },
+      {
+        "code": "6187",
+        "name": "均華",
+        "rating": "Overweight",
+        "target_price": "2000"
+      },
+      {
+        "code": "3711",
+        "name": "日月光投控",
+        "rating": "Overweight",
+        "target_price": "858"
+      },
+      {
+        "code": "2360",
+        "name": "致茂",
+        "rating": "Overweight",
+        "target_price": "2800"
+      },
+      {
+        "code": "2449",
+        "name": "京元電子",
+        "rating": "Overweight",
+        "target_price": "348"
+      },
+      {
+        "code": "3105",
+        "name": "穩懋",
+        "rating": "EqualWeight",
+        "target_price": "600"
+      },
+      {
+        "code": "4979",
+        "name": "華星光",
+        "rating": "EqualWeight",
+        "target_price": "688"
+      }
+    ]
+  },
+  {
+    "date": "2026-10-12",
+    "firm": "元大投顧",
+    "label": "10/12專欄重點股",
+    "picks": [
+      {
+        "code": "2357",
+        "name": "華碩"
+      },
+      {
+        "code": "6672",
+        "name": "騰輝電子-KY"
+      },
+      {
+        "code": "1319",
+        "name": "東陽"
+      }
+    ]
+  },
+  {
+    "date": "2026-10-12",
+    "firm": "元大投顧",
+    "label": "10/12早會新標的與買進/持有",
+    "picks": [
+      {
+        "code": "2484",
+        "name": "希華"
+      },
+      {
+        "code": "6472",
+        "name": "保瑞"
+      }
+    ]
+  },
+  {
+    "date": "2026-10-12",
+    "firm": "元大投顧",
+    "label": "10/12重點新聞買進",
+    "picks": [
+      {
+        "code": "1301",
+        "name": "台塑"
+      }
+    ]
   }
 ]

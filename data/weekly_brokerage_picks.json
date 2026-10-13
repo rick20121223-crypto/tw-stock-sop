@@ -1,7 +1,18 @@
 {
-  "generated_at": "2026-10-07",
+  "generated_at": "2026-10-13",
   "lookback_days": 14,
   "mentions": [
+    {
+      "code": "1301",
+      "name": "台塑",
+      "reports": [
+        {
+          "date": "2026-10-12",
+          "firm": "元大投顧",
+          "label": "10/12重點新聞買進"
+        }
+      ]
+    },
     {
       "code": "1303",
       "name": "南亞",
@@ -10,6 +21,17 @@
           "date": "2026-10-01",
           "firm": "Money錢",
           "label": "229期-AI供電升級4台廠"
+        }
+      ]
+    },
+    {
+      "code": "1319",
+      "name": "東陽",
+      "reports": [
+        {
+          "date": "2026-10-12",
+          "firm": "元大投顧",
+          "label": "10/12專欄重點股"
         }
       ]
     },
@@ -58,8 +80,17 @@
           "date": "2026-10-01",
           "firm": "Money錢",
           "label": "229期-AI供電升級4台廠"
+        },
+        {
+          "date": "2026-10-11",
+          "firm": "MorganStanley",
+          "label": "光寶科9月營收",
+          "rating": "EqualWeight",
+          "target_price": "315"
         }
-      ]
+      ],
+      "rating": "EqualWeight",
+      "target_price": "315"
     },
     {
       "code": "2303",
@@ -87,10 +118,17 @@
           "label": "2424期-高價股強者恆強",
           "rating": "無",
           "target_price": "操作區間1700~2300"
+        },
+        {
+          "date": "2026-10-12",
+          "firm": "MorganStanley",
+          "label": "台達電9月營收",
+          "rating": "Overweight",
+          "target_price": "2500"
         }
       ],
-      "rating": "無",
-      "target_price": "操作區間1700~2300"
+      "rating": "Overweight",
+      "target_price": "2500"
     },
     {
       "code": "2313",
@@ -112,9 +150,17 @@
           "firm": "萬寶週刊",
           "label": "1716期(籌碼轉弱/逢高減碼警訊)",
           "rating": "逢高減碼"
+        },
+        {
+          "date": "2026-10-07",
+          "firm": "Citi",
+          "label": "國巨財報快報",
+          "rating": "Buy",
+          "target_price": "1450"
         }
       ],
-      "rating": "逢高減碼"
+      "rating": "Buy",
+      "target_price": "1450"
     },
     {
       "code": "2328",
@@ -170,6 +216,17 @@
       ]
     },
     {
+      "code": "2357",
+      "name": "華碩",
+      "reports": [
+        {
+          "date": "2026-10-12",
+          "firm": "元大投顧",
+          "label": "10/12專欄重點股"
+        }
+      ]
+    },
+    {
       "code": "2359",
       "name": "所羅門",
       "reports": [
@@ -179,6 +236,21 @@
           "label": "229期-機器人概念股"
         }
       ]
+    },
+    {
+      "code": "2360",
+      "name": "致茂",
+      "reports": [
+        {
+          "date": "2026-10-08",
+          "firm": "MorganStanley",
+          "label": "CPO測試封裝供應鏈報告",
+          "rating": "Overweight",
+          "target_price": "2800"
+        }
+      ],
+      "rating": "Overweight",
+      "target_price": "2800"
     },
     {
       "code": "2365",
@@ -236,6 +308,21 @@
       ]
     },
     {
+      "code": "2449",
+      "name": "京元電子",
+      "reports": [
+        {
+          "date": "2026-10-08",
+          "firm": "MorganStanley",
+          "label": "CPO測試封裝供應鏈報告",
+          "rating": "Overweight",
+          "target_price": "348"
+        }
+      ],
+      "rating": "Overweight",
+      "target_price": "348"
+    },
+    {
       "code": "2455",
       "name": "全新",
       "reports": [
@@ -254,6 +341,17 @@
           "date": "2026-10-01",
           "firm": "Money錢",
           "label": "229期-10檔AI潛力股"
+        }
+      ]
+    },
+    {
+      "code": "2484",
+      "name": "希華",
+      "reports": [
+        {
+          "date": "2026-10-12",
+          "firm": "元大投顧",
+          "label": "10/12早會新標的與買進/持有"
         }
       ]
     },
@@ -291,6 +389,21 @@
           "label": "229期-10檔AI潛力股"
         }
       ]
+    },
+    {
+      "code": "3008",
+      "name": "大立光",
+      "reports": [
+        {
+          "date": "2026-10-13",
+          "firm": "MorganStanley",
+          "label": "大立光評等調升",
+          "rating": "Overweight",
+          "target_price": "7325"
+        }
+      ],
+      "rating": "Overweight",
+      "target_price": "7325"
     },
     {
       "code": "3017",
@@ -350,6 +463,21 @@
       ],
       "rating": "買進",
       "target_price": "3305"
+    },
+    {
+      "code": "3105",
+      "name": "穩懋",
+      "reports": [
+        {
+          "date": "2026-10-08",
+          "firm": "MorganStanley",
+          "label": "CPO測試封裝供應鏈報告",
+          "rating": "EqualWeight",
+          "target_price": "600"
+        }
+      ],
+      "rating": "EqualWeight",
+      "target_price": "600"
     },
     {
       "code": "3131",
@@ -496,8 +624,17 @@
           "date": "2026-10-01",
           "firm": "Money錢",
           "label": "229期-AI升級概念股"
+        },
+        {
+          "date": "2026-10-08",
+          "firm": "MorganStanley",
+          "label": "CPO測試封裝供應鏈報告",
+          "rating": "Overweight",
+          "target_price": "858"
         }
-      ]
+      ],
+      "rating": "Overweight",
+      "target_price": "858"
     },
     {
       "code": "4549",
@@ -568,10 +705,17 @@
           "label": "每日焦點",
           "rating": "買進",
           "target_price": "735"
+        },
+        {
+          "date": "2026-10-08",
+          "firm": "MorganStanley",
+          "label": "CPO測試封裝供應鏈報告",
+          "rating": "EqualWeight",
+          "target_price": "688"
         }
       ],
-      "rating": "買進",
-      "target_price": "735"
+      "rating": "EqualWeight",
+      "target_price": "688"
     },
     {
       "code": "5243",
@@ -634,6 +778,21 @@
       ]
     },
     {
+      "code": "5536",
+      "name": "雅特",
+      "reports": [
+        {
+          "date": "2026-10-07",
+          "firm": "Daiwa",
+          "label": "ACTER雅特初次覆蓋",
+          "rating": "Buy",
+          "target_price": "1415"
+        }
+      ],
+      "rating": "Buy",
+      "target_price": "1415"
+    },
+    {
       "code": "6125",
       "name": "廣運",
       "reports": [
@@ -661,10 +820,17 @@
           "label": "1362期目錄(僅標題，內文未能讀取)",
           "rating": "無",
           "target_price": "1455"
+        },
+        {
+          "date": "2026-10-08",
+          "firm": "MorganStanley",
+          "label": "CPO測試封裝供應鏈報告",
+          "rating": "Overweight",
+          "target_price": "2000"
         }
       ],
-      "rating": "無",
-      "target_price": "1455"
+      "rating": "Overweight",
+      "target_price": "2000"
     },
     {
       "code": "6188",
@@ -700,6 +866,21 @@
         }
       ],
       "rating": "Buy"
+    },
+    {
+      "code": "6223",
+      "name": "MPI",
+      "reports": [
+        {
+          "date": "2026-10-08",
+          "firm": "MorganStanley",
+          "label": "CPO測試封裝供應鏈報告",
+          "rating": "Overweight",
+          "target_price": "8000"
+        }
+      ],
+      "rating": "Overweight",
+      "target_price": "8000"
     },
     {
       "code": "6239",
@@ -779,6 +960,17 @@
       ]
     },
     {
+      "code": "6472",
+      "name": "保瑞",
+      "reports": [
+        {
+          "date": "2026-10-12",
+          "firm": "元大投顧",
+          "label": "10/12早會新標的與買進/持有"
+        }
+      ]
+    },
+    {
       "code": "6505",
       "name": "台塑化",
       "reports": [
@@ -814,6 +1006,17 @@
       ],
       "rating": "區間操作",
       "target_price": "580"
+    },
+    {
+      "code": "6672",
+      "name": "騰輝電子-KY",
+      "reports": [
+        {
+          "date": "2026-10-12",
+          "firm": "元大投顧",
+          "label": "10/12專欄重點股"
+        }
+      ]
     },
     {
       "code": "6690",
@@ -897,21 +1100,6 @@
       ]
     },
     {
-      "code": "6870",
-      "name": "騰雲",
-      "reports": [
-        {
-          "date": "2026-09-23",
-          "firm": "宏遠投顧",
-          "label": "個股報告",
-          "rating": "買進",
-          "target_price": "384"
-        }
-      ],
-      "rating": "買進",
-      "target_price": "384"
-    },
-    {
       "code": "6933",
       "name": "AMAX-KY",
       "reports": [
@@ -980,6 +1168,21 @@
           "label": "229期-10檔AI潛力股"
         }
       ]
+    },
+    {
+      "code": "7769",
+      "name": "鴻勁精密",
+      "reports": [
+        {
+          "date": "2026-10-08",
+          "firm": "MorganStanley",
+          "label": "CPO測試封裝供應鏈報告",
+          "rating": "Overweight",
+          "target_price": "10008"
+        }
+      ],
+      "rating": "Overweight",
+      "target_price": "10008"
     },
     {
       "code": "7846",
