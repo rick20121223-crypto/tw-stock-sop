@@ -132,9 +132,10 @@ def _collect_events(df: pd.DataFrame) -> dict:
 
         kd365_bullish = _kd365_bullish_state(latest)
         reasons: list = []
-        neckline = _detect_w_bottom(window, fast_slope_up, macd_bias, kd365_bullish, reasons)
-        if neckline is None:
+        w_bottom_result = _detect_w_bottom(window, fast_slope_up, macd_bias, kd365_bullish, reasons)
+        if w_bottom_result is None:
             continue
+        neckline = w_bottom_result[0]
 
         signal_date = df.iloc[i]["date"]
         if _kd365_crossed_up_recently(df, i):
