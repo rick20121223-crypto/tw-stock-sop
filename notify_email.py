@@ -9,6 +9,8 @@
 
 需要的環境變數（GitHub Actions Secrets）：
     FINMIND_TOKEN       FinMind API Token（沒有也能跑，用免費額度）
+    FUGLE_API_KEY        Fugle 行情 API Key（沒有的話，長期判讀仍會跑，只是
+                         不會做60分/5分同步確認，見下方2026-10-20說明）
     GMAIL_ADDRESS        寄件/收件用的 Gmail 帳號
     GMAIL_APP_PASSWORD   Gmail「應用程式密碼」（16碼），不是登入密碼
 
@@ -26,6 +28,18 @@ notify_intraday.py）已移除——實際上沒有在依60分/5分做短線進�
 純屬噪音，且盤中複查白白消耗Fugle API額度。⚡短線進場的判讀邏輯本身
 還留在sop_decision.py，「短線進場」頁(pages/1_短線進場.py)想手動查還是
 能查，只是不再自動通知、不再有獨立的盤中排程。
+
+2026-10-20（同日）：陽明(2609)案例發現，_check_long()原本呼叫full_check()
+時故意把fugle_api_key傳空字串，等於「長期」判讀完全不看60分/5分，連
+sop_decision.py裡現成的combine_timeframes_ambiguous_guard（任一週期沒
+同步翻多就強制觀望、不准輸出模糊加碼）都沒機會接管。現在改成真的把
+fugle_api_key傳進full_check()，讓週/日/60分/5分一起丟進同一次
+combine_timeframes()——這不是把上面拿掉的⚡短線進場異動通知裝回來
+（短線本身不會再單獨寄信/單獨記錄），純粹是讓「長期」這個結論在判斷
+加碼/買進時，多一層「60分/5分有沒有同步」的否決層。代價：又需要
+Fugle Key、又會對60分/5分發API請求（量級跟拿掉前的短線檢查差不多），
+沒設定FUGLE_API_KEY時full_check()會自動略過60分/5分，長期判讀照跑
+（跟以前一樣只看週+日），不會整個失敗。
 """
 
 import concurrent.futures
@@ -672,9 +686,15 @@ def build_change_email(today: str, long_changes: list,
     return plain, html
 
 
-def _check_long(code: str, market: str, api_token: str):
+def _check_long(code: str, market: str, api_token: str, fugle_api_key: str):
     """
-    長期：週+日整合，跟首頁「長線留倉」同一套。
+    長期：週+日+60分+5分一起丟進同一次combine_timeframes()（見本檔開頭
+    2026-10-20同日說明）——跟首頁「長線留倉」不同，首頁為了整份清單載入
+    速度，刻意不帶Fugle Key（見home.py analyze_stock()）；這裡是排程批次
+    不受頁面載入時間限制，讓現成的combine_timeframes_ambiguous_guard能
+    真的接管，避免只看週+日就把「部分週期翻多」誤判成「加碼」。
+    fugle_api_key為空字串、或market!="TW"時，full_check()會自動略過
+    60分/5分，優雅退回只看週+日的舊行為。
     回傳 (分類, 收盤, 資料日期, 是否帶量突破確認, 錯誤訊息)——資料日期是日K
     最後一根的實際交易日，用來讓 signal_log.csv 記錄真正的交易日而不是
     呼叫當下的系統日期（見 append_signal_log()）。「帶量突破確認」只要任一
@@ -683,7 +703,7 @@ def _check_long(code: str, market: str, api_token: str):
     分類本身。
     """
     try:
-        result = full_check(code, market, api_token, "", "2024-01-01")
+        result = full_check(code, market, api_token, fugle_api_key, "2024-01-01")
         breakout = any(d.get("帶量突破") for d in result.get("各週期明細", {}).values())
         return classify_final(result["最終建議"]), result.get("收盤"), result.get("資料日期"), breakout, None
     except Exception as exc:  # noqa: BLE001
@@ -755,10 +775,13 @@ def _check_contract_liability(code: str, market: str, api_token: str, check_toda
 
 def main() -> None:
     api_token = os.environ.get("FINMIND_TOKEN", "")
+    fugle_api_key = os.environ.get("FUGLE_API_KEY", "")
     gmail_address = os.environ.get("GMAIL_ADDRESS", "")
     gmail_app_password = os.environ.get("GMAIL_APP_PASSWORD", "")
     if not gmail_address or not gmail_app_password:
         raise SystemExit("缺少環境變數 GMAIL_ADDRESS 或 GMAIL_APP_PASSWORD，無法寄信。")
+    if not fugle_api_key:
+        print("⚠️ 未設定 FUGLE_API_KEY，長期判讀會略過60分/5分同步確認，只看週+日（舊行為）。")
 
     # 這裡一定要用taiwan_today()、不能用date.today()：notify.yml的cron
     # 刻意排在UTC前一天22:00~23:00觸發，讓GitHub Actions runner的UTC
@@ -792,7 +815,8 @@ def main() -> None:
     check_contract_liability_today = _is_monday_in_taiwan()
 
     def _check_one(name, code, market, source):
-        long_bucket, long_close, long_date, long_breakout, long_err = _check_long(code, market, api_token)
+        long_bucket, long_close, long_date, long_breakout, long_err = _check_long(
+            code, market, api_token, fugle_api_key)
         holding = _check_holding(code, market)
         contract_liability = _check_contract_liability(
             code, market, api_token, check_contract_liability_today)
