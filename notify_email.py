@@ -1,22 +1,19 @@
 """
-每天排程執行一次，分別判讀「長期（週+日）」和「短期（60分+5分）」兩種
-SOP結論，只要任一種「跟上次不一樣」就寄一封 Email 通知，內容分成
-📅長線留倉異動／⚡短線進場異動／🏦大戶持股動向 三個區塊（都是「有變化才
-通知」）；另外台灣時間每週一會多附上📈合約負債上升中清單，這個不是
-「異動通知」，是刻意每週固定提醒目前哪些股票合約負債正在上升，讓使用者
-維持印象（見_is_monday_in_taiwan()、contract_liability.py）。
+每天排程執行一次，判讀「長期（週+日）」SOP結論，只要「跟上次不一樣」就
+寄一封 Email 通知，內容分成 📅長線留倉異動／🏦大戶持股動向 兩個區塊
+（都是「有變化才通知」）；另外台灣時間每週一會多附上📈合約負債上升中
+清單，這個不是「異動通知」，是刻意每週固定提醒目前哪些股票合約負債正在
+上升，讓使用者維持印象（見_is_monday_in_taiwan()、contract_liability.py）。
 
 被 .github/workflows/notify.yml 排程呼叫，不是給 Streamlit 用的。
 
 需要的環境變數（GitHub Actions Secrets）：
     FINMIND_TOKEN       FinMind API Token（沒有也能跑，用免費額度）
-    FUGLE_API_KEY        Fugle 行情 API Key（沒有的話，短期部分會跳過，
-                         只判讀長期）
     GMAIL_ADDRESS        寄件/收件用的 Gmail 帳號
     GMAIL_APP_PASSWORD   Gmail「應用程式密碼」（16碼），不是登入密碼
 
-狀態檔：data/last_signals.json，記錄上一次每檔股票的「長期」「短期」
-分類，本次執行後會覆寫最新結果並由 workflow 自動 commit 回 repo。
+狀態檔：data/last_signals.json，記錄上一次每檔股票的「長期」分類，
+本次執行後會覆寫最新結果並由 workflow 自動 commit 回 repo。
 
 2026-09-15：GitHub 的 schedule cron 沒有 SLA，偶爾會延遲或整次漏跳
 （曾發生排定時間過了一小時以上都沒觸發），所以 notify.yml 現在在原本
@@ -24,10 +21,11 @@ SOP結論，只要任一種「跟上次不一樣」就寄一封 Email 通知，�
 重複寄信，main() 一開始會先檢查 signal_log.csv 今天是不是已經跑過，
 跑過就直接跳過（見 _already_ran_today()）。
 
-本檔只負責「開盤前一次的每日批次」。開盤時段（09:00~13:30）的盤中
-即時複查是另一支獨立腳本 notify_intraday.py（被 .github/workflows/
-intraday_check.yml 每15分鐘呼叫一次），只複查本檔判讀出來、目前「短期」
-為買進/加碼的股票，共用這裡的 STATE_FILE / SIGNAL_LOG_FILE 與寄信邏輯。
+2026-10-20：「短期（60分+5分）」的異動通知與盤中複查（原
+notify_intraday.py）已移除——實際上沒有在依60分/5分做短線進出場，通知
+純屬噪音，且盤中複查白白消耗Fugle API額度。⚡短線進場的判讀邏輯本身
+還留在sop_decision.py，「短線進場」頁(pages/1_短線進場.py)想手動查還是
+能查，只是不再自動通知、不再有獨立的盤中排程。
 """
 
 import concurrent.futures
@@ -49,9 +47,9 @@ import youtube_stock_mentions as ytm
 from contract_liability import compute_latest_change, fetch_contract_liability_trend
 from holding_shares import compute_consecutive_signals, fetch_major_holder_trend
 from multi_timeframe_check import full_check
-from sop_decision import RULES, classify_final, combine_timeframes, evaluate_timeframe
+from sop_decision import RULES, classify_final
 from tw_time import taiwan_today
-from stock_core import get_intraday_data, run_all_indicators, unique_watchlist
+from stock_core import unique_watchlist
 
 STATE_FILE = Path(__file__).parent / "data" / "last_signals.json"
 SIGNAL_LOG_FILE = Path(__file__).parent / "data" / "signal_log.csv"
@@ -66,7 +64,7 @@ BUCKET_STYLE = {
     "賣出減碼": {"color": "#43a047", "bg": "#eaf6ec", "icon": "🔻"},
 }
 
-HORIZON_LABEL = {"長期": "📅 長線留倉", "短期": "⚡ 短線進場"}
+HORIZON_LABEL = {"長期": "📅 長線留倉"}
 
 # 大股東(>400張)持股比例，觸發通知的兩種條件（任一成立就寄）：
 # 1. 連續N週同方向（跟網頁圖表 pages/3_多週期整合分析.py 用同一個預設N=3）
@@ -274,8 +272,7 @@ def _html_wrap(title: str, subtitle: str, body_html: str) -> str:
   <p style="margin:0 0 20px; color:#888; font-size:13px;">{subtitle}</p>
   {body_html}
   <p style="margin-top:24px; color:#aaa; font-size:11px; line-height:1.6;">
-    僅供輔助判讀，不構成投資建議。📅長線留倉依「週+日」整合結論，
-    ⚡短線進場依「60分+5分」整合結論（僅台股個股/ETF，需要Fugle Key）。
+    僅供輔助判讀，不構成投資建議。📅長線留倉依「週+日」整合結論。
     🏦大戶持股依TDCC集保週資料（僅台股個股/ETF），連續{HOLDING_CONSECUTIVE_N}週同向
     或單週變動達{HOLDING_JUMP_THRESHOLD:g}個百分點才提示。
     📈合約負債依FinMind季報資料（僅台股個股/ETF），每週一固定列出目前
@@ -309,27 +306,24 @@ def _section_html(title: str, cards_html: str) -> str:
 def build_first_run_email(today: str, new_state: dict) -> tuple:
     rows = sorted(
         new_state.values(),
-        key=lambda v: (BUCKET_ORDER.get(v.get("長期"), 9), BUCKET_ORDER.get(v.get("短期"), 9)),
+        key=lambda v: BUCKET_ORDER.get(v.get("長期"), 9),
     )
 
-    plain_lines = [f"但丁股票SOP 通知已啟用（{today}）", "", "今天的起始分類（長期／短期）：", ""]
+    plain_lines = [f"但丁股票SOP 通知已啟用（{today}）", "", "今天的起始分類（長期）：", ""]
     for v in rows:
-        short = v.get("短期") or "—"
         badge = _source_badge(v.get("來源"))
-        plain_lines.append(f"・{badge}{v['名稱']}（{v['代碼']}）：長期={v['長期']}／短期={short}")
+        plain_lines.append(f"・{badge}{v['名稱']}（{v['代碼']}）：長期={v['長期']}")
     plain_lines += ["", "之後只有分類「變化」時才會再寄信通知你。", "🔄 標記代表這是本週法人買賣超排行自動加入的股票。"]
     plain = "\n".join(plain_lines)
 
     cards = ""
     for v in rows:
         style = BUCKET_STYLE[v["長期"]]
-        short = v.get("短期")
-        short_text = f'　短期：<b style="color:{BUCKET_STYLE[short]["color"]}">{short}</b>' if short else ""
         badge = _source_badge(v.get("來源"))
         cards += _card_html(
             style["icon"], style["color"], style["bg"],
             f"{badge}{v['名稱']}（{v['代碼']}）",
-            f'長期：<span style="color:{style["color"]}; font-weight:600;">{v["長期"]}</span>{short_text}',
+            f'長期：<span style="color:{style["color"]}; font-weight:600;">{v["長期"]}</span>',
         )
     html_body = cards + (
         '<p style="color:#888; font-size:13px; margin-top:16px;">'
@@ -587,7 +581,7 @@ def _summarize_errors(errors: list) -> list:
     return summary
 
 
-def _build_narrative_summary(long_changes: list, short_changes: list,
+def _build_narrative_summary(long_changes: list,
                               holding_changes: list, contract_liability_rising: list) -> str:
     """
     用規則式文字（不呼叫LLM）把這次異動轉成一段白話摘要，放在信件最前面，
@@ -610,16 +604,6 @@ def _build_narrative_summary(long_changes: list, short_changes: list,
             bits.append(f"{len(down)}檔轉弱（{'、'.join(down)}）")
         if bits:
             parts.append(f"📅長線：{'，'.join(bits)}。")
-
-    if short_changes:
-        up, down = _tally(short_changes)
-        bits = []
-        if up:
-            bits.append(f"{len(up)}檔轉強（{'、'.join(up)}）")
-        if down:
-            bits.append(f"{len(down)}檔轉弱（{'、'.join(down)}）")
-        if bits:
-            parts.append(f"⚡短線：{'，'.join(bits)}。")
 
     if holding_changes:
         up = [c["name"] for c in holding_changes if c["direction"] == "上升"]
@@ -648,12 +632,12 @@ def _narrative_summary_html(summary: str) -> str:
     )
 
 
-def build_change_email(today: str, long_changes: list, short_changes: list,
+def build_change_email(today: str, long_changes: list,
                         holding_changes: list, contract_liability_rising: list,
                         industry_group_alerts: list, stop_loss_alerts: list,
                         errors: list) -> tuple:
     errors = _summarize_errors(errors)
-    summary = _build_narrative_summary(long_changes, short_changes, holding_changes,
+    summary = _build_narrative_summary(long_changes, holding_changes,
                                         contract_liability_rising)
     plain_lines = [f"但丁股票SOP 訊號異動通知（{today}）"]
     if summary:
@@ -662,8 +646,6 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
         plain_lines += ["", "🛑 停損提醒（個人持股成本，非SOP結論）：", ""] + _stop_loss_to_plain(stop_loss_alerts)
     if long_changes:
         plain_lines += ["", HORIZON_LABEL["長期"] + "異動：", ""] + _changes_to_plain(long_changes)
-    if short_changes:
-        plain_lines += ["", HORIZON_LABEL["短期"] + "異動：", ""] + _changes_to_plain(short_changes)
     if holding_changes:
         plain_lines += ["", "🏦 大股東(>400張)持股動向：", ""] + _holding_changes_to_plain(holding_changes)
     if contract_liability_rising:
@@ -677,7 +659,6 @@ def build_change_email(today: str, long_changes: list, short_changes: list,
     html_body = _narrative_summary_html(summary)
     html_body += _section_html("🛑 停損提醒（個人持股成本，非SOP結論）", _stop_loss_to_html(stop_loss_alerts))
     html_body += _section_html(HORIZON_LABEL["長期"] + "異動", _changes_to_html(long_changes))
-    html_body += _section_html(HORIZON_LABEL["短期"] + "異動", _changes_to_html(short_changes))
     html_body += _section_html("🏦 大股東(>400張)持股動向", _holding_changes_to_html(holding_changes))
     html_body += _section_html("📈 合約負債上升中（每週一提醒）", _contract_liability_to_html(contract_liability_rising))
     html_body += _section_html("🔗 族群聯動提示", _industry_group_to_html(industry_group_alerts))
@@ -772,50 +753,18 @@ def _check_contract_liability(code: str, market: str, api_token: str, check_toda
         return None
 
 
-def _check_short(code: str, market: str, fugle_api_key: str):
-    """
-    短期：60分+5分整合，跟「短線進場」頁同一套。只支援台股個股/ETF，
-    且需要Fugle Key；不適用時回傳 (None, None, None)，不算錯誤。
-    """
-    if market != "TW" or not fugle_api_key:
-        return None, None, None
-    try:
-        verdicts = {}
-        close = None
-        df60 = get_intraday_data(code, "60", fugle_api_key)
-        if not df60.empty:
-            df60 = run_all_indicators(df60, "60分")
-            verdicts["60分"] = evaluate_timeframe(df60, "60分")
-            close = float(df60.iloc[-1]["close"])
-        df5 = get_intraday_data(code, "5", fugle_api_key)
-        if not df5.empty:
-            df5 = run_all_indicators(df5, "5分")
-            verdicts["5分"] = evaluate_timeframe(df5, "5分")
-            close = float(df5.iloc[-1]["close"])
-        if not verdicts:
-            return None, None, "60分/5分皆無資料"
-        result = combine_timeframes(verdicts)
-        return classify_final(result["最終建議"]), close, None
-    except Exception as exc:  # noqa: BLE001
-        return None, None, str(exc)
-
-
 def main() -> None:
     api_token = os.environ.get("FINMIND_TOKEN", "")
-    fugle_api_key = os.environ.get("FUGLE_API_KEY", "")
     gmail_address = os.environ.get("GMAIL_ADDRESS", "")
     gmail_app_password = os.environ.get("GMAIL_APP_PASSWORD", "")
     if not gmail_address or not gmail_app_password:
         raise SystemExit("缺少環境變數 GMAIL_ADDRESS 或 GMAIL_APP_PASSWORD，無法寄信。")
-    if not fugle_api_key:
-        print("⚠️ 未設定 FUGLE_API_KEY，本次只會判讀長期（週+日），短期（60分/5分）略過。")
 
     # 這裡一定要用taiwan_today()、不能用date.today()：notify.yml的cron
     # 刻意排在UTC前一天22:00~23:00觸發，讓GitHub Actions runner的UTC
-    # 日期比台灣日期晚一天算，如果today還是用UTC，會跟notify_intraday.py
-    # （盤中執行時UTC/台灣是同一天）寫進signal_log.csv的日期對不齊，
-    # _already_ran_today()可能誤判成「今天已經跑過」，讓整天的批次跟
-    # email通通被跳過（實際發生過的bug，見code-review）。
+    # 日期比台灣日期晚一天算，如果today還是用UTC，_already_ran_today()
+    # 可能誤判成「今天已經跑過」，讓整天的批次跟email通通被跳過（實際
+    # 發生過的bug，見code-review）。
     today = str(taiwan_today())
     if _already_ran_today(today):
         print(f"{today}：今天已經跑過一次了（可能是備援排程時間點重複觸發），跳過本次執行，不重複判讀、不重複寄信。")
@@ -835,7 +784,7 @@ def main() -> None:
     is_first_run = not last_state
 
     new_state = {}
-    long_changes, short_changes, holding_changes = [], [], []
+    long_changes, holding_changes = [], []
     contract_liability_rising = []
     latest_closes: Dict[str, float] = {}
     errors = []
@@ -844,12 +793,11 @@ def main() -> None:
 
     def _check_one(name, code, market, source):
         long_bucket, long_close, long_date, long_breakout, long_err = _check_long(code, market, api_token)
-        short_bucket, short_close, short_err = _check_short(code, market, fugle_api_key)
         holding = _check_holding(code, market)
         contract_liability = _check_contract_liability(
             code, market, api_token, check_contract_liability_today)
         return (name, code, market, source, long_bucket, long_close, long_date, long_breakout, long_err,
-                short_bucket, short_close, short_err, holding, contract_liability)
+                holding, contract_liability)
 
     watchlist = full_watchlist()
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -859,12 +807,10 @@ def main() -> None:
         ]
         for future in concurrent.futures.as_completed(futures):
             (name, code, market, source, long_bucket, long_close, long_date, long_breakout, long_err,
-             short_bucket, short_close, short_err, holding, contract_liability) = future.result()
+             holding, contract_liability) = future.result()
 
             if long_err is not None:
                 errors.append(f"{name}（{code}）長期：{long_err}")
-            if short_err is not None:
-                errors.append(f"{name}（{code}）短期：{short_err}")
             if long_bucket is None:
                 continue  # 長期是核心判讀，抓不到就整檔略過
 
@@ -881,23 +827,17 @@ def main() -> None:
             # 只看這次「真的抓到」的holding，不會因為沿用舊值就誤觸發。
             holding_to_store = holding if holding is not None else (prev.get("大戶") if prev else None)
             new_state[key] = {"名稱": name, "代碼": code, "長期": long_bucket,
-                               "短期": short_bucket, "來源": source, "大戶": holding_to_store}
+                               "來源": source, "大戶": holding_to_store}
 
             log_rows.append({"name": name, "code": code, "market": market,
                               "horizon": "長期", "close": long_close, "signal": long_bucket,
                               "date": long_date})
-            if short_bucket is not None:
-                log_rows.append({"name": name, "code": code, "market": market,
-                                  "horizon": "短期", "close": short_close, "signal": short_bucket})
 
             if prev:
                 if prev.get("長期") and prev["長期"] != long_bucket:
                     long_changes.append({"name": name, "code": code, "market": market, "source": source,
                                           "prev": prev["長期"], "new": long_bucket, "close": long_close,
                                           "breakout": long_breakout})
-                if short_bucket is not None and prev.get("短期") and prev["短期"] != short_bucket:
-                    short_changes.append({"name": name, "code": code, "market": market, "source": source,
-                                           "prev": prev["短期"], "new": short_bucket, "close": short_close})
                 # 大戶持股是週頻資料，同一週內天天重跑不該重複寄信，只有
                 # 「這週的資料日期」跟上次記錄到的不一樣時才可能是新一週的
                 # 結果，才需要判斷這週夠不夠格觸發通知（見_holding_reason）。
@@ -923,7 +863,6 @@ def main() -> None:
     save_state(new_state)
     append_signal_log(today, log_rows)
     append_signal_changes(long_changes, "長期")
-    append_signal_changes(short_changes, "短期")
 
     if is_first_run:
         plain, html = build_first_run_email(today, new_state)
@@ -935,7 +874,7 @@ def main() -> None:
     # 否則沒有其他SOP訊號異動、但部位仍跌破門檻的日子會被提早return跳過。
     stop_loss_alerts = _stop_loss_alerts(_load_my_holdings(), latest_closes)
 
-    if not long_changes and not short_changes and not holding_changes \
+    if not long_changes and not holding_changes \
             and not contract_liability_rising and not stop_loss_alerts:
         print(f"{today}：無訊號變化，不寄信。")
         if errors:
@@ -945,10 +884,9 @@ def main() -> None:
     industry_group_alerts = _industry_group_alerts(long_changes, watchlist)
 
     long_changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
-    short_changes.sort(key=lambda c: BUCKET_ORDER.get(c["new"], 9))
     holding_changes.sort(key=lambda c: 0 if c["direction"] == "上升" else 1)
     contract_liability_rising.sort(key=lambda c: c.get("pct_change") or 0, reverse=True)
-    plain, html = build_change_email(today, long_changes, short_changes, holding_changes,
+    plain, html = build_change_email(today, long_changes, holding_changes,
                                       contract_liability_rising, industry_group_alerts,
                                       stop_loss_alerts, errors)
     print(plain)

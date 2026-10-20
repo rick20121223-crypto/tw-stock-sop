@@ -12,9 +12,8 @@ runner上也是UTC。各個workflow的cron雖然已經把UTC/台灣時間的offs
 today() 因此把整天的批次誤判成「已經跑過」而跳過；institutional_
 ranking.py的rotate指令因此把「上週」算成早了一週）。
 
-這個模組被 notify_email.py、notify_intraday.py、institutional_ranking.py
-共用，任何新腳本要判斷「今天」都應該從這裡拿，不要各自直接呼叫
-date.today()/datetime.now()。
+這個模組被 notify_email.py、institutional_ranking.py共用，任何新腳本要
+判斷「今天」都應該從這裡拿，不要各自直接呼叫date.today()/datetime.now()。
 """
 
 from datetime import date, datetime, timedelta, timezone
