@@ -853,6 +853,20 @@ def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
                        for s in _cluster_pivot_levels(pivot_lows, tolerance, min_touches)]
     resistance_levels = [(r, "整理平台（近期多次觸碰確認）")
                           for r in _cluster_pivot_levels(pivot_highs, tolerance, min_touches)]
+    # 2026-10-20：「整理平台」要求同一價位至少觸碰platform_min_touches次，
+    # 單次孤立的歷史明顯高/低點（陽明2609案例的前高67.3）會被濾掉、完全
+    # 進不了候選清單。但「前高/前低」在但丁老師原始概念裡不要求反覆測試，
+    # 這裡額外加回看窗口內最高的轉折高點／最低的轉折低點各一個，只需出現
+    # 一次即可；若跟既有整理平台價位已經很接近（容忍帶內）就不重複加入。
+    if cfg.get("single_touch_prior_level", {}).get("enabled", True):
+        if not pivot_lows.empty:
+            prior_low = pivot_lows.min()
+            if not any(abs(prior_low - s) / s <= tolerance for s, _ in support_levels):
+                support_levels.append((prior_low, "前低（單次觸及）"))
+        if not pivot_highs.empty:
+            prior_high = pivot_highs.max()
+            if not any(abs(prior_high - r) / r <= tolerance for r, _ in resistance_levels):
+                resistance_levels.append((prior_high, "前高（單次觸及）"))
     # 型態學輔助觸發層併入的頸線候選（見 pattern_recognition），與既有K棒
     # 整理平台並列使用，尤其在缺乏明顯歷史平台時作為補充依據。
     if w_bottom_neckline is not None:
