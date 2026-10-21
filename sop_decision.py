@@ -228,6 +228,48 @@ def _step2_60min_turtle_confirm(df: pd.DataFrame, tf: str, latest: pd.Series,
 
 
 # ------------------------------------------------------------------
+# Step 2 附則（僅60分線適用）：60分20MA~60MA多空預警區間，2026-10-21課程
+# 新增規則（60分MA60是這次新增的均線，原本只有MA20/120/240）。跌破20MA
+# 是第一預警（多單第一步撤離/減碼，或空單第一步試打）；跌破60MA是第二
+# 預警（空單第二步加碼；若60MA走平/上揚，也可以是空單回補或多單尋求
+# 轉折的防守點）。這是剛教的新規則，還沒有backtest驗證過實際預測力，
+# 先只附加caveats提示，不計入ma_bias、不影響conclusion——等驗證過再
+# 考慮正式納入評分（跟min60_turtle_confirm/weekly_kd_golden_cross走
+# 同一套流程）。假設60分正常結構下MA20在MA60之上（跌破60MA通常也已經
+# 跌破20MA），所以用elif只報比較嚴重的那一則，不重複兩則訊息。
+# ------------------------------------------------------------------
+def _step2_60min_warning_zone(df: pd.DataFrame, tf: str, latest: pd.Series,
+                               caveats: List[str]) -> None:
+    cfg = RULES["indicators"].get("min60_warning_zone", {})
+    if tf != "60分" or not cfg.get("enabled", True):
+        return
+
+    close = latest.get("close")
+    ma20, ma60 = latest.get("MA20"), latest.get("MA60")
+    if pd.isna(close) or pd.isna(ma20) or pd.isna(ma60):
+        return
+
+    if close < ma60:
+        slope_lookback = RULES["indicators"]["ma_slope"]["lookback"]
+        ma60_slope = ma_slope(df, "MA60", lookback=slope_lookback)
+        if ma60_slope in ("上揚", "走平"):
+            caveats.append(
+                "⚠️ 60分跌破60MA（多空預警區間下緣），但60MA走平/上揚："
+                "依但丁老師2026-10-21課程規則，可視為空單回補或多單尋求轉折的防守點"
+            )
+        else:
+            caveats.append(
+                "⚠️ 60分跌破60MA（多空預警區間下緣）且60MA同步下彎："
+                "依但丁老師2026-10-21課程規則，空單可執行第二步加碼"
+            )
+    elif close < ma20:
+        caveats.append(
+            "⚠️ 60分跌破20MA（多空預警區間上緣）：依但丁老師2026-10-21課程"
+            "規則，多單宜進行第一步撤離/減碼，或視為空單第一步試打"
+        )
+
+
+# ------------------------------------------------------------------
 # 簡化版頂背離偵測：近期股價創高，但 MACD 柱狀圖高點未同步創高。
 # 這是簡化偵測，非教科書式嚴謹型態辨識，僅供參考。
 # ------------------------------------------------------------------
@@ -1095,6 +1137,7 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     ma_bias += _step2_weekly_pullback_zone(df, tf, latest, reasons)
     ma_bias += _step2_weekly_kd_golden_cross(df, tf, latest, reasons)
     ma_bias += _step2_60min_turtle_confirm(df, tf, latest, reasons)
+    _step2_60min_warning_zone(df, tf, latest, caveats)
     macd_bias, dead_cross, macd_bearish_divergence = _step3_macd(df, latest, reasons, caveats)
     # KD(36,5,5) Double Check：只適用日/60分/5分，週線維持既有KD(9,3,3)
     # 規則不變（見sop_rules.yaml kd365區塊註解）

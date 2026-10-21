@@ -100,6 +100,16 @@ indicators:
     # test_intraday_signals_buy.py）。
     bonus: 1
 
+  min60_warning_zone:
+    # 2026-10-21課程新增：60分線新增60MA，跟原本的20MA組成「多空預警
+    # 區間」。跌破20MA＝第一預警（多單第一步撤離/減碼，或空單第一步
+    # 試打）；跌破60MA＝第二預警（空單第二步加碼；若60MA走平/上揚，
+    # 也可以是空單回補或多單尋求轉折的防守點）。這是剛教的新規則，還
+    # 沒有backtest驗證過實際預測力，先只附加caveats提示，不計入ma_bias、
+    # 不影響conclusion——等驗證過再考慮正式納入評分（跟min60_turtle_
+    # confirm/weekly_kd_golden_cross走同一套流程）。
+    enabled: true
+
   macd:
     divergence_lookback: 20              # 頂背離偵測回看根數
     dif_above_zero_bonus: 1              # DIF在零軸之上
