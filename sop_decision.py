@@ -1375,21 +1375,10 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
 # 跨週期整合：「為日線留倉，為五分出場」
 # 長天期（週/日）結構轉弱 → 否決短天期反彈買訊，直接判賣出/減碼
 # 短天期（60分/5分）轉弱 → 不推翻長天期多頭結構，但提示先讓短打部位出場
+# 這是原始版本（週/日平權、60分/5分平權），見sop_rules.yaml
+# watch_rules.combine_timeframes_mode註解——目前仍是正式預設("legacy")。
 # ------------------------------------------------------------------
-def combine_timeframes(verdicts: Dict[str, Verdict]) -> dict:
-    if not verdicts:
-        return {"最終建議": "資料不足，無法判讀", "各週期明細": {}}
-
-    detail = {
-        tf: {"結論": v.conclusion, "信心": v.confidence, "理由": v.reasons, "但書": v.caveats,
-             "帶量突破": v.volume_breakout_confirmed, "建議曝險": v.suggested_exposure}
-        for tf, v in verdicts.items()
-    }
-
-    if len(verdicts) == 1:
-        only_tf = next(iter(verdicts))
-        return {"最終建議": verdicts[only_tf].conclusion, "各週期明細": detail}
-
+def _combine_timeframes_legacy(verdicts: Dict[str, Verdict], detail: dict) -> dict:
     long_tfs = [tf for tf in ("週", "日") if tf in verdicts]
     short_tfs = [tf for tf in ("60分", "5分") if tf in verdicts]
 
@@ -1436,6 +1425,95 @@ def combine_timeframes(verdicts: Dict[str, Verdict]) -> dict:
             return {"最終建議": "短線買進（無長天期資料交叉驗證，僅供短打參考）", "各週期明細": detail}
 
     return {"最終建議": "觀望", "各週期明細": detail}
+
+
+# ------------------------------------------------------------------
+# 跨週期整合（實驗模式）："day_60m_primary"——日線為長天期主要判斷依據，
+# 週線降為輔助；60分為短天期主要判斷依據，5分降為輔助。輔助週期只能
+# 「降級」（把主要週期的買訊往下拉），不能單獨把主要週期的觀望拉成買進
+# ——跟既有MTM/CCI「二線輔助只降級不升級」同一套原則。2026-10-23陽明
+# (2609)/安葆(7792)兩次案例之後新增，呼應2026-10-21課程「60MA是為中長線
+# 交易者設計」把60分地位拉高、淡化5分的方向。還沒有backtest/對照驗證過，
+# 見test_combine_weighting_compare.py，mode切成這個之前應該先跑過比較。
+# ------------------------------------------------------------------
+def _combine_timeframes_day_60m_primary(verdicts: Dict[str, Verdict], detail: dict, cfg: dict) -> dict:
+    primary_long = cfg.get("primary_long", "日")
+    secondary_long = cfg.get("secondary_long", "週")
+    primary_short = cfg.get("primary_short", "60分")
+    secondary_short = cfg.get("secondary_short", "5分")
+
+    p_long = verdicts.get(primary_long)
+    s_long = verdicts.get(secondary_long)
+    p_short = verdicts.get(primary_short)
+    s_short = verdicts.get(secondary_short)
+
+    if p_long is None:
+        # 沒有主要長天期資料就無法判斷方向，退回最保守的觀望（正常流程下
+        # full_check()一定會抓日線，這裡純粹是防呆，不應該在production發生）。
+        return {"最終建議": f"觀望（{primary_long}資料不足，無法判讀）", "各週期明細": detail}
+
+    if p_long.conclusion == "賣出減碼":
+        return {
+            "最終建議": f"賣出減碼（{primary_long}結構已轉弱，短線反彈視為誘多假動作，不追）",
+            "各週期明細": detail,
+        }
+
+    s_long_bear = s_long is not None and s_long.conclusion == "賣出減碼"
+    p_short_bear = p_short is not None and p_short.conclusion == "賣出減碼"
+
+    p_long_bullish = p_long.conclusion in ("買進", "加碼")
+
+    if p_long_bullish and s_long_bear:
+        # 輔助長天期（週）轉弱：只降級，不否決——跟legacy版「長天期任一個
+        # 轉弱就直接賣出減碼」不同，這裡週線只是輔助，不足以推翻日線買訊。
+        return {
+            "最終建議": f"觀望（{secondary_long}結構轉弱，{primary_long}買訊先降級觀察）",
+            "各週期明細": detail,
+        }
+
+    if p_long_bullish and p_short_bear:
+        return {
+            "最終建議": f"長線續抱、短線先出場（以{primary_long}/{primary_short}為主）",
+            "各週期明細": detail,
+        }
+
+    if p_long_bullish:
+        s_long_bullish = s_long is not None and s_long.conclusion in ("買進", "加碼")
+        p_short_bullish = p_short is not None and p_short.conclusion in ("買進", "加碼")
+        if p_long.conclusion == "加碼" and s_long_bullish and p_short_bullish:
+            return {
+                "最終建議": f"加碼（{primary_long}+{secondary_long}+{primary_short}同步翻多，以{primary_long}為主）",
+                "各週期明細": detail,
+            }
+        return {"最終建議": p_long.conclusion, "各週期明細": detail}
+
+    if p_long.conclusion == "觀望":
+        return {
+            "最終建議": f"觀望（{primary_long}尚未表態，不追{secondary_long}/短線訊號）",
+            "各週期明細": detail,
+        }
+
+    return {"最終建議": "觀望", "各週期明細": detail}
+
+
+def combine_timeframes(verdicts: Dict[str, Verdict]) -> dict:
+    if not verdicts:
+        return {"最終建議": "資料不足，無法判讀", "各週期明細": {}}
+
+    detail = {
+        tf: {"結論": v.conclusion, "信心": v.confidence, "理由": v.reasons, "但書": v.caveats,
+             "帶量突破": v.volume_breakout_confirmed, "建議曝險": v.suggested_exposure}
+        for tf, v in verdicts.items()
+    }
+
+    if len(verdicts) == 1:
+        only_tf = next(iter(verdicts))
+        return {"最終建議": verdicts[only_tf].conclusion, "各週期明細": detail}
+
+    mode_cfg = RULES["watch_rules"].get("combine_timeframes_mode", {})
+    if mode_cfg.get("mode") == "day_60m_primary":
+        return _combine_timeframes_day_60m_primary(verdicts, detail, mode_cfg)
+    return _combine_timeframes_legacy(verdicts, detail)
 
 
 # ------------------------------------------------------------------
