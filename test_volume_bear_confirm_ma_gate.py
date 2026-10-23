@@ -89,7 +89,7 @@ def evaluate_timeframe_modified(df: pd.DataFrame, timeframe_label: str) -> Verdi
     triangle = sd._detect_triangle_consolidation(df, tf, reasons, caveats)
     triangle_force_watch = triangle["active"] and not triangle["volume_confirmed"]
 
-    platform_bias = sd._step6_left_side_platform(
+    platform_bias, _platform_support_levels = sd._step6_left_side_platform(
         df, tf, latest, fast_slope_up, reasons, caveats,
         w_bottom_neckline=w_bottom_neckline, m_top_neckline=m_top_neckline)
     ma120_second_leg = sd._detect_ma120_second_leg(df, tf)

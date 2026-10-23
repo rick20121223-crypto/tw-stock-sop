@@ -216,6 +216,25 @@ indicators:
     undercut_tolerance: 0.98        # 第二腳低點跌破第一腳超過2%才算真正跌破
     recent_bars: 3                  # 第二腳須發生在最近幾根K棒內才算數
 
+  platform_second_leg:
+    # 2026-10-23新增：「兩次腳未破」的廣義版，不限定MA120、不限定日線——
+    # 但丁老師課程講的是「左側歷史平台區（或前低）打出兩次腳，底不破就
+    # 不能砍單」，不是只有半年線這個特例。參考價位改用Step6
+    # （_find_platform_support_resistance）已經找到的左側支撐候選（整理
+    # 平台或單次觸及前低），套用跟ma120_second_leg同一套「兩腳未破」演算
+    # 法（見_legs_untested_check）。跟ma120版本一樣，目前只附加caveats
+    # 提示，不直接否決賣出減碼／不直接升級買進，還沒backtest驗證過，
+    # 獨立開關，不用時可以直接關掉不影響其他規則。沒有applicable_
+    # timeframes限制——週/日/60分/5分都適用，各自沿用left_side_platform.
+    # platform_lookback_bars已有的回看範圍。
+    enabled: true
+    min_bars: 20
+    window_bars: 60
+    near_support_tolerance: 1.03    # 低點貼近/跌破支撐位3%以內視為測到支撐
+    leg_split_rebound: 1.05         # 中間反彈拉開5%以上才算新的一腳
+    undercut_tolerance: 0.98        # 第二腳低點跌破第一腳超過2%才算真正跌破
+    recent_bars: 3                  # 第二腳須發生在最近幾根K棒內才算數
+
   deviation_threshold:   # 乖離率門檻：股價偏離關鍵均線超過此比例，不論多空方向一律嚴禁追高摸底
     週: 0.25
     日: 0.20
@@ -405,6 +424,7 @@ pattern_recognition:
 # ==================================================================
 special_notes:
   ma120_second_leg_hint: true   # 大跌測半年線(MA120)打出第二隻腳未破 → 提示「帶著鋼盔慢買」
+  platform_second_leg_hint: true  # 左側平台/前低打出兩次腳未破（廣義版，不限MA120/日線）→ 提示底不破不能砍單
 
 # ==================================================================
 # 漸進式部位建議（suggested_exposure，不影響conclusion本身）

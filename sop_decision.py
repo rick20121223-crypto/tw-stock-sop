@@ -864,11 +864,17 @@ def _detect_triangle_consolidation(df: pd.DataFrame, tf: str,
 # - 拉回測到左側平台支撐未破 + 短線指標（快均線）轉向 → 相對安全買點，加分
 # - 反彈碰到左側平台壓力 + 今開無法過昨高（四關價否決）→ 應獲利了結，減分
 # ------------------------------------------------------------------
-def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
-                               fast_slope_up: bool,
-                               reasons: List[str], caveats: List[str],
-                               w_bottom_neckline: Optional[float] = None,
-                               m_top_neckline: Optional[float] = None) -> float:
+def _find_platform_support_resistance(df: pd.DataFrame, tf: str, latest: pd.Series,
+                                       w_bottom_neckline: Optional[float] = None,
+                                       m_top_neckline: Optional[float] = None,
+                                       ) -> Optional[Tuple[List[Tuple[float, str]], List[Tuple[float, str]]]]:
+    """
+    找出左側支撐/壓力候選水位，回傳 (support_levels, resistance_levels)，
+    每個元素是 (價位, 來源說明) tuple；資料不足時回傳 None。從
+    _step6_left_side_platform()抽出來的共用邏輯，_detect_platform_second_leg()
+    (2026-10-23新增的「兩次腳未破」廣義化版本)也需要同一份候選水位，
+    避免兩邊各自重算一次pivot。
+    """
     cfg = RULES["indicators"]["left_side_platform"]
     exclude_recent = cfg["exclude_recent_bars"]
     pivot_window = cfg["pivot_window"]
@@ -878,19 +884,16 @@ def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
     min_touches = cfg.get("platform_min_touches", 2)
 
     if len(df) <= exclude_recent or pd.isna(latest.get("close")):
-        caveats.append("左側K棒資料不足，Step6左側平台校正略過")
-        return 0.0
+        return None
 
     available_left = df.iloc[:-exclude_recent]
     left = available_left.tail(lookback) if lookback else available_left
     if len(left) < min_left_bars:
-        caveats.append("左側K棒資料不足，Step6左側平台校正略過")
-        return 0.0
+        return None
 
     left = left.reset_index(drop=True)
     pivot_highs, pivot_lows = _find_pivot_points(left, pivot_window)
 
-    close = latest["close"]
     support_levels = [(s, "整理平台（近期多次觸碰確認）")
                        for s in _cluster_pivot_levels(pivot_lows, tolerance, min_touches)]
     resistance_levels = [(r, "整理平台（近期多次觸碰確認）")
@@ -916,7 +919,28 @@ def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
     if m_top_neckline is not None:
         resistance_levels.append((m_top_neckline, "M頭頸線"))
 
+    return support_levels, resistance_levels
+
+
+def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
+                               fast_slope_up: bool,
+                               reasons: List[str], caveats: List[str],
+                               w_bottom_neckline: Optional[float] = None,
+                               m_top_neckline: Optional[float] = None,
+                               ) -> Tuple[float, Optional[List[Tuple[float, str]]]]:
+    """回傳 (bias, support_levels)——support_levels給呼叫端的
+    _detect_platform_second_leg()重用，不用再重算一次pivot（資料不足時為
+    None，呼叫端應該跳過兩次腳偵測）。"""
+    cfg = RULES["indicators"]["left_side_platform"]
+    levels = _find_platform_support_resistance(df, tf, latest, w_bottom_neckline, m_top_neckline)
+    if levels is None:
+        caveats.append("左側K棒資料不足，Step6左側平台校正略過")
+        return 0.0, None
+    support_levels, resistance_levels = levels
+
+    close = latest["close"]
     confirm_bars = cfg.get("confirm_bars", 1)
+    tolerance = cfg["tolerance_pct"]
 
     bias = 0.0
     candidate_supports = [(s, src) for s, src in support_levels if s <= close]
@@ -962,7 +986,46 @@ def _step6_left_side_platform(df: pd.DataFrame, tf: str, latest: pd.Series,
         elif near_resistance:
             caveats.append(f"股價接近左側{resistance_src}壓力區約 {resistance:.2f}，留意反彈受阻風險")
 
-    return bias
+    return bias, support_levels
+
+
+# ------------------------------------------------------------------
+# 共用演算法：「兩次腳測試同一支撐、未破」偵測。window內「min <=
+# reference*near_tolerance」的K棒視為測到支撐，依leg_split_rebound的
+# 反彈幅度分段成不同「腳」；若最後一段夠新(recent_bars內)、且最後一腳
+# 低點沒有跌破第一腳低點超過undercut_tolerance，視為「兩次腳未破」。
+# reference可以是逐K棒變動的均線(pd.Series，例如MA120)，也可以是固定
+# 價位（例如Step6找到的左側平台支撐）——供_detect_ma120_second_leg()
+# 跟_detect_platform_second_leg()共用，2026-10-23從原本只給MA120用的
+# _detect_ma120_second_leg()抽出來。
+# ------------------------------------------------------------------
+def _legs_untested_check(window: pd.DataFrame, reference: pd.Series,
+                          leg_split_rebound: float, undercut_tolerance: float,
+                          recent_bars: int, near_tolerance: float) -> bool:
+    near_support = (window["min"] <= reference * near_tolerance) & pd.notna(reference)
+    touch_idxs = window.index[near_support].tolist()
+    if len(touch_idxs) < 2:
+        return False
+
+    legs = [[touch_idxs[0]]]
+    for idx in touch_idxs[1:]:
+        base_low = window.loc[legs[-1][-1], "min"]
+        between_high = window.loc[legs[-1][-1]:idx, "max"].max()
+        if pd.notna(between_high) and pd.notna(base_low) and between_high >= base_low * leg_split_rebound:
+            legs.append([idx])
+        else:
+            legs[-1].append(idx)
+
+    if len(legs) < 2:
+        return False
+
+    leg1_low = window.loc[legs[0], "min"].min()
+    leg2_low = window.loc[legs[-1], "min"].min()
+    latest_idx = window.index[-1]
+    is_recent = (latest_idx - legs[-1][-1]) <= recent_bars
+    undercut = pd.notna(leg1_low) and pd.notna(leg2_low) and leg2_low < leg1_low * undercut_tolerance
+
+    return is_recent and not undercut
 
 
 # ------------------------------------------------------------------
@@ -985,30 +1048,55 @@ def _detect_ma120_second_leg(df: pd.DataFrame, tf: str) -> bool:
     if ma.isna().all():
         return False
 
-    near_support = (window["min"] <= ma * cfg["near_support_tolerance"]) & pd.notna(ma)
-    touch_idxs = window.index[near_support].tolist()
-    if len(touch_idxs) < 2:
-        return False
+    return _legs_untested_check(window, ma, cfg["leg_split_rebound"], cfg["undercut_tolerance"],
+                                 cfg["recent_bars"], cfg["near_support_tolerance"])
 
-    legs = [[touch_idxs[0]]]
-    for idx in touch_idxs[1:]:
-        base_low = window.loc[legs[-1][-1], "min"]
-        between_high = window.loc[legs[-1][-1]:idx, "max"].max()
-        if pd.notna(between_high) and pd.notna(base_low) and between_high >= base_low * cfg["leg_split_rebound"]:
-            legs.append([idx])
-        else:
-            legs[-1].append(idx)
 
-    if len(legs) < 2:
-        return False
+# ------------------------------------------------------------------
+# 2026-10-23新增：「兩次腳未破」廣義化版本。原本_detect_ma120_second_leg
+# 只認「半年線(MA120)」當支撐參考、只支援日線，但但丁老師課程講的其實
+# 更廣義——「左側歷史平台區（或前低）打出兩次腳，底不破就不能砍單」，
+# 不限定要是MA120。這裡改用Step6（_find_platform_support_resistance）
+# 已經找到的左側支撐候選（整理平台或單次觸及前低）當參考價位，套用同一
+# 套_legs_untested_check()演算法，且不限timeframe（週/日/60分/5分都適用，
+# 沿用left_side_platform.platform_lookback_bars各週期已有的回看範圍）。
+# 跟原本的ma120版本一樣，目前只附加caveats提示，不直接否決賣出減碼、
+# 也不直接升級買進/加碼——還沒backtest驗證過，獨立開關
+# platform_second_leg.enabled，不用時可以直接關掉不影響其他規則。
+# ------------------------------------------------------------------
+def _detect_platform_second_leg(df: pd.DataFrame, tf: str, latest: pd.Series,
+                                 support_levels: Optional[List[Tuple[float, str]]]) -> Optional[float]:
+    """回傳偵測到「兩次腳未破」的支撐價位，沒偵測到回傳None——呼叫端決定
+    要不要提示（跟_detect_ma120_second_leg同一套模式：只在conclusion不是
+    賣出減碼/加碼時才附加caveat，見evaluate_timeframe下方
+    special_notes.platform_second_leg_hint區塊）。"""
+    cfg = RULES["indicators"].get("platform_second_leg", {})
+    if not cfg.get("enabled", True) or not support_levels:
+        return None
 
-    leg1_low = window.loc[legs[0], "min"].min()
-    leg2_low = window.loc[legs[-1], "min"].min()
-    latest_idx = window.index[-1]
-    is_recent = (latest_idx - legs[-1][-1]) <= cfg["recent_bars"]
-    undercut = pd.notna(leg1_low) and pd.notna(leg2_low) and leg2_low < leg1_low * cfg["undercut_tolerance"]
+    min_bars = cfg.get("min_bars", 20)
+    window_bars = cfg.get("window_bars", 60)
+    if len(df) < min_bars:
+        return None
 
-    return is_recent and not undercut
+    window = df.tail(window_bars).reset_index(drop=True)
+    if len(window) < min_bars:
+        return None
+
+    close = latest.get("close")
+    if pd.isna(close):
+        return None
+
+    # 只檢查「目前價格以下」的支撐水位（跟Step6 candidate_supports同一個
+    # 篩選邏輯），由近到遠依序檢查，抓到第一個成立的就回報並結束。
+    candidates = sorted({level for level, _ in support_levels if level <= close}, reverse=True)
+    for level in candidates:
+        reference = pd.Series(level, index=window.index)
+        if _legs_untested_check(window, reference, cfg["leg_split_rebound"],
+                                 cfg["undercut_tolerance"], cfg["recent_bars"],
+                                 cfg["near_support_tolerance"]):
+            return level
+    return None
 
 
 # ------------------------------------------------------------------
@@ -1174,10 +1262,11 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     triangle_force_watch = triangle["active"] and not triangle["volume_confirmed"]
     triangle_breakout_confirmed = bool(triangle["active"] and triangle["volume_confirmed"])
 
-    platform_bias = _step6_left_side_platform(
+    platform_bias, platform_support_levels = _step6_left_side_platform(
         df, tf, latest, fast_slope_up, reasons, caveats,
         w_bottom_neckline=w_bottom_neckline, m_top_neckline=m_top_neckline)
     ma120_second_leg = _detect_ma120_second_leg(df, tf)
+    platform_second_leg_level = _detect_platform_second_leg(df, tf, latest, platform_support_levels)
     extreme_deviation = _check_extreme_deviation(tf, latest, reasons)
     weekly_blowoff = _check_weekly_blowoff(tf, df, latest, reasons, caveats)
 
@@ -1323,6 +1412,15 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
             "偵測到大跌測到半年線(MA120)打出第二隻腳未破的特殊情境：可考慮「帶著鋼盔慢買」——"
             "先進 5-10% 基本部位，待5分/60分指標確認低點墊高、均線轉平緩後，每日加碼約5%"
             "（僅供分批佈局參考，非立即買進訊號）"
+        )
+
+    # ---- 2026-10-23新增：左側平台/前低兩次腳未破（ma120_second_leg的廣義版，
+    # 不限定MA120、不限定日線），只在非賣出/加碼時提示 ----
+    if platform_second_leg_level is not None and RULES["special_notes"].get("platform_second_leg_hint", True) \
+            and conclusion not in ("賣出減碼", "加碼"):
+        caveats.append(
+            f"📐 偵測到左側平台/前低約{platform_second_leg_level:.2f}打出兩次腳、底部未實質跌破"
+            "（依但丁老師規則，底不破不能砍單，僅供觀察參考，非買進依據）"
         )
 
     abs_score = abs(score)

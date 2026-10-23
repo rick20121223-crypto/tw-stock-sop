@@ -67,7 +67,7 @@ def test_enabled_triggers_resistance_penalty():
     cfg.setdefault("single_touch_prior_level", {})["enabled"] = True
 
     reasons, caveats = [], []
-    bias = _step6_left_side_platform(df, "日", latest, True, reasons, caveats)
+    bias, _support_levels = _step6_left_side_platform(df, "日", latest, True, reasons, caveats)
 
     assert bias == cfg["resistance_penalty"], f"預期觸發resistance_penalty，實際bias={bias}"
     assert any("前高" in r and "67.3" in r for r in reasons), f"預期reasons提到前高67.3，實際={reasons}"
@@ -80,7 +80,7 @@ def test_disabled_keeps_old_behavior():
     cfg.setdefault("single_touch_prior_level", {})["enabled"] = False
 
     reasons, caveats = [], []
-    bias = _step6_left_side_platform(df, "日", latest, True, reasons, caveats)
+    bias, _support_levels = _step6_left_side_platform(df, "日", latest, True, reasons, caveats)
 
     assert bias == 0.0, f"關閉開關後應該完全退回舊行為(bias=0)，實際bias={bias}"
     assert not reasons and not caveats, f"關閉開關後不該有任何前高相關提示，實際reasons={reasons} caveats={caveats}"
@@ -114,7 +114,7 @@ def test_2609_real_case_no_false_positive():
     cfg.setdefault("single_touch_prior_level", {})["enabled"] = True
 
     reasons, caveats = [], []
-    bias = _step6_left_side_platform(df_day, "日", latest, True, reasons, caveats)
+    bias, _support_levels = _step6_left_side_platform(df_day, "日", latest, True, reasons, caveats)
 
     # 前高67.3現在應該被列入候選（不再被platform_min_touches濾掉），但股價
     # 距離still超過2%容忍帶，所以這次不該誤觸發扣分——確認修改沒有在這個
