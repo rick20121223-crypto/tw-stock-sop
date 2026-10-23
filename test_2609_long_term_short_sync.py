@@ -25,7 +25,7 @@
 """
 import pandas as pd
 
-from sop_decision import Verdict, classify_final, combine_timeframes, evaluate_timeframe
+from sop_decision import RULES, Verdict, classify_final, combine_timeframes, evaluate_timeframe
 
 
 def _load_2609_day_week_verdicts():
@@ -53,7 +53,11 @@ def _load_2609_day_week_verdicts():
 
 
 def test_old_behavior_without_short_tfs_was_add():
-    """先確認問題重現：舊呼叫方式（不含60分/5分）這次確實是「加碼」。"""
+    """先確認問題重現：舊呼叫方式（不含60分/5分）這次確實是「加碼」。
+    這個案例本來就是在測legacy模式底下的ambiguous_guard問題（跟後來
+    2026-10-23才新增的day_60m_primary權重模式是另一回事），明確鎖定
+    mode="legacy"，不要被RULES目前的全域預設（可能已經切成
+    day_60m_primary）影響。"""
     loaded = _load_2609_day_week_verdicts()
     if loaded is None:
         print("⚠️ 抓不到2609在2026-10-19以前的資料，略過")
@@ -62,7 +66,12 @@ def test_old_behavior_without_short_tfs_was_add():
     assert v_day.conclusion == "買進", f"預期日線=買進，實際={v_day.conclusion}（資料來源可能已變動）"
     assert v_week.conclusion == "加碼", f"預期週線=加碼，實際={v_week.conclusion}（資料來源可能已變動）"
 
-    old_result = combine_timeframes({"日": v_day, "週": v_week})
+    original_mode = RULES["watch_rules"]["combine_timeframes_mode"]["mode"]
+    RULES["watch_rules"]["combine_timeframes_mode"]["mode"] = "legacy"
+    try:
+        old_result = combine_timeframes({"日": v_day, "週": v_week})
+    finally:
+        RULES["watch_rules"]["combine_timeframes_mode"]["mode"] = original_mode
     old_bucket = classify_final(old_result["最終建議"])
     assert old_bucket == "加碼", f"預期重現問題：舊行為應該是加碼，實際={old_bucket}"
     print(f"✅ 重現問題：不含60分/5分時，合併結果='{old_result['最終建議']}' -> {old_bucket}")
@@ -70,7 +79,8 @@ def test_old_behavior_without_short_tfs_was_add():
 
 def test_new_behavior_with_short_tf_watch_becomes_watch():
     """把當時系統實際記錄的60分結論（觀望）一起丟進combine_timeframes()，
-    確認ambiguous_guard接管、不再是加碼。"""
+    確認ambiguous_guard接管、不再是加碼。同樣明確鎖定mode="legacy"，
+    理由同上一個測試。"""
     loaded = _load_2609_day_week_verdicts()
     if loaded is None:
         print("⚠️ 抓不到2609在2026-10-19以前的資料，略過")
@@ -79,7 +89,12 @@ def test_new_behavior_with_short_tf_watch_becomes_watch():
 
     v_60m_watch = Verdict(conclusion="觀望", confidence="中", score=0.0,
                            reasons=["(測試用) 60分當時實際記錄的結論：觀望"])
-    new_result = combine_timeframes({"日": v_day, "週": v_week, "60分": v_60m_watch})
+    original_mode = RULES["watch_rules"]["combine_timeframes_mode"]["mode"]
+    RULES["watch_rules"]["combine_timeframes_mode"]["mode"] = "legacy"
+    try:
+        new_result = combine_timeframes({"日": v_day, "週": v_week, "60分": v_60m_watch})
+    finally:
+        RULES["watch_rules"]["combine_timeframes_mode"]["mode"] = original_mode
     new_bucket = classify_final(new_result["最終建議"])
 
     assert new_bucket != "加碼", f"修法後2609這個案例不該再判加碼，實際={new_bucket}（{new_result['最終建議']}）"
