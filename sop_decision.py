@@ -1437,6 +1437,13 @@ def _combine_timeframes_legacy(verdicts: Dict[str, Verdict], detail: dict) -> di
 # 見test_combine_weighting_compare.py，mode切成這個之前應該先跑過比較。
 # ------------------------------------------------------------------
 def _combine_timeframes_day_60m_primary(verdicts: Dict[str, Verdict], detail: dict, cfg: dict) -> dict:
+    """
+    2026-10-23修訂：輔助週期（週/5分）只拿掉「升級」的權力（不能單獨把主要
+    週期的觀望拉成買進，也不能單獨把買進湊成加碼），**保留「降級/否決」
+    的權力**（週/5分任一個賣出減碼，一樣可以直接否決/觸發短線先出場）——
+    比最早那版更貼近但丁老師「長天期否決短天期」的原始精神，只是把「誰
+    有資格發動偏多訊號」這件事從「週或日任一個」收斂成「日線自己」。
+    """
     primary_long = cfg.get("primary_long", "日")
     secondary_long = cfg.get("secondary_long", "週")
     primary_short = cfg.get("primary_short", "60分")
@@ -1452,37 +1459,46 @@ def _combine_timeframes_day_60m_primary(verdicts: Dict[str, Verdict], detail: di
         # full_check()一定會抓日線，這裡純粹是防呆，不應該在production發生）。
         return {"最終建議": f"觀望（{primary_long}資料不足，無法判讀）", "各週期明細": detail}
 
+    # 長天期否決權：日／週任一個賣出減碼就直接否決，週保留跟legacy一樣的
+    # 否決力，只是不再有「單獨把日線觀望拉成買進」的升級力。
     if p_long.conclusion == "賣出減碼":
         return {
             "最終建議": f"賣出減碼（{primary_long}結構已轉弱，短線反彈視為誘多假動作，不追）",
             "各週期明細": detail,
         }
-
-    s_long_bear = s_long is not None and s_long.conclusion == "賣出減碼"
-    p_short_bear = p_short is not None and p_short.conclusion == "賣出減碼"
-
-    p_long_bullish = p_long.conclusion in ("買進", "加碼")
-
-    if p_long_bullish and s_long_bear:
-        # 輔助長天期（週）轉弱：只降級，不否決——跟legacy版「長天期任一個
-        # 轉弱就直接賣出減碼」不同，這裡週線只是輔助，不足以推翻日線買訊。
+    if s_long is not None and s_long.conclusion == "賣出減碼":
         return {
-            "最終建議": f"觀望（{secondary_long}結構轉弱，{primary_long}買訊先降級觀察）",
+            "最終建議": f"賣出減碼（{secondary_long}結構已轉弱，短線反彈視為誘多假動作，不追）",
             "各週期明細": detail,
         }
 
-    if p_long_bullish and p_short_bear:
+    p_long_bullish = p_long.conclusion in ("買進", "加碼")
+
+    # 短天期示警：60分／5分任一個賣出減碼都能觸發「短線先出場」，5分保留
+    # 跟legacy一樣的降級力，只是不再有單獨升級的力量。
+    short_bear_alert = (
+        (p_short is not None and p_short.conclusion == "賣出減碼")
+        or (s_short is not None and s_short.conclusion == "賣出減碼")
+    )
+
+    if p_long_bullish and short_bear_alert:
         return {
-            "最終建議": f"長線續抱、短線先出場（以{primary_long}/{primary_short}為主）",
+            "最終建議": f"長線續抱、短線先出場（{primary_long}為主）",
             "各週期明細": detail,
         }
 
     if p_long_bullish:
-        s_long_bullish = s_long is not None and s_long.conclusion in ("買進", "加碼")
-        p_short_bullish = p_short is not None and p_short.conclusion in ("買進", "加碼")
-        if p_long.conclusion == "加碼" and s_long_bullish and p_short_bullish:
+        # 全部週期同步翻多才給強化版「加碼」標籤——週/60分/5分在這裡只是
+        # confirm，不是gatekeeper：日線沒先自己達到「加碼」等級，這幾個
+        # 輔助週期再怎麼偏多也沒用，呼應「只能降級不能升級」的原則。
+        all_long_bullish = s_long is None or s_long.conclusion in ("買進", "加碼")
+        all_short_bullish = (
+            (p_short is None or p_short.conclusion in ("買進", "加碼"))
+            and (s_short is None or s_short.conclusion in ("買進", "加碼"))
+        )
+        if p_long.conclusion == "加碼" and all_long_bullish and all_short_bullish:
             return {
-                "最終建議": f"加碼（{primary_long}+{secondary_long}+{primary_short}同步翻多，以{primary_long}為主）",
+                "最終建議": f"加碼（{primary_long}+{secondary_long}+{primary_short}+{secondary_short}同步翻多，以{primary_long}為主）",
                 "各週期明細": detail,
             }
         return {"最終建議": p_long.conclusion, "各週期明細": detail}
