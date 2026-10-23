@@ -1553,9 +1553,27 @@ def _combine_timeframes_day_60m_primary(verdicts: Dict[str, Verdict], detail: di
     s_short = verdicts.get(secondary_short)
 
     if p_long is None:
-        # 沒有主要長天期資料就無法判斷方向，退回最保守的觀望（正常流程下
-        # full_check()一定會抓日線，這裡純粹是防呆，不應該在production發生）。
-        return {"最終建議": f"觀望（{primary_long}資料不足，無法判讀）", "各週期明細": detail}
+        # 2026-10-23修bug：沒有日線資料不代表「完全無法判讀」——
+        # pages/1_短線進場.py只做60分/5分短線分析，呼叫combine_timeframes()
+        # 時本來就只會傳60分/5分，不會有日/週。這裡改成退回「短天期
+        # fallback」：60分當主要依據，5分一樣保留否決力，不要因為日線
+        # 不存在就把實際算出來的60分/5分結果整個蓋掉（切換成day_60m_
+        # primary當天才發現：原本直接回傳「資料不足」，等於把短線進場頁
+        # 全部股票打成觀望，是真的production regression，不是防呆分支）。
+        if p_short is None:
+            return {"最終建議": "觀望（資料不足，無法判讀）", "各週期明細": detail}
+        s_short_bear = s_short is not None and s_short.conclusion == "賣出減碼"
+        if p_short.conclusion == "賣出減碼" or s_short_bear:
+            return {
+                "最終建議": "短線賣出減碼（無長天期資料交叉驗證，僅供短打參考）",
+                "各週期明細": detail,
+            }
+        if p_short.conclusion in ("買進", "加碼"):
+            return {
+                "最終建議": f"短線{p_short.conclusion}（無長天期資料交叉驗證，僅供短打參考）",
+                "各週期明細": detail,
+            }
+        return {"最終建議": "觀望", "各週期明細": detail}
 
     # 長天期否決權：日／週任一個賣出減碼就直接否決，週保留跟legacy一樣的
     # 否決力，只是不再有「單獨把日線觀望拉成買進」的升級力。
