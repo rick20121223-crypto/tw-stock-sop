@@ -1613,8 +1613,16 @@ def _combine_timeframes_day_60m_primary(verdicts: Dict[str, Verdict], detail: di
             and (s_short is None or s_short.conclusion in ("買進", "加碼"))
         )
         if p_long.conclusion == "加碼" and all_long_bullish and all_short_bullish:
+            # 文字只列實際有資料、真的檢查過的週期，不要連沒丟進來的週期
+            # 也宣稱「同步翻多」（例如diagnose_sell_lag.py只傳日+週，不該
+            # 顯示成連60分/5分都同步翻多）。
+            synced_tfs = "+".join(
+                tf for tf, v in ((primary_long, p_long), (secondary_long, s_long),
+                                  (primary_short, p_short), (secondary_short, s_short))
+                if v is not None
+            )
             return {
-                "最終建議": f"加碼（{primary_long}+{secondary_long}+{primary_short}+{secondary_short}同步翻多，以{primary_long}為主）",
+                "最終建議": f"加碼（{synced_tfs}同步翻多，以{primary_long}為主）",
                 "各週期明細": detail,
             }
         return {"最終建議": p_long.conclusion, "各週期明細": detail}
