@@ -1346,7 +1346,21 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     )
 
     # ---- 領先指標示警（MTM／CCI 並列，同等級，任一觸發都直接壓成觀望）----
-    mtm_alert_active = tf == "60分" and mtm_exit_alert and watch_cfg.get("mtm_60m_exit_downgrade", True)
+    # 2026-10-23：「MTM絕不能用於中繼段/盤整」——目前仍處於三角收斂整理
+    # 區間、且還沒帶量突破確認時（跟triangle_force_watch同一個條件：
+    # active且未volume_confirmed，一旦突破確認就不算「中繼」了，MTM該
+    # 恢復正常作用），MTM翻空不觸發示警降級，避免盤整期雙巴雜訊反覆打架
+    # （見sop_rules.yaml indicators.mtm.suppress_during_consolidation
+    # 區塊註解）。MTM本身的reasons文字照常附加，只是不讓它驅動conclusion。
+    mtm_suppressed_by_consolidation = (
+        triangle_force_watch and RULES["indicators"]["mtm"].get("suppress_during_consolidation", True)
+    )
+    mtm_alert_active = (
+        tf == "60分" and mtm_exit_alert and watch_cfg.get("mtm_60m_exit_downgrade", True)
+        and not mtm_suppressed_by_consolidation
+    )
+    if tf == "60分" and mtm_exit_alert and mtm_suppressed_by_consolidation:
+        caveats.append("MTM翻空訊號出現在三角收斂整理區間內，依但丁老師規則不採用，暫不以此降級")
     cci_alert_active = cci_exit_alert and watch_cfg.get("cci_exit_alert_downgrade", True)
     leading_indicator_exit_alert = (mtm_alert_active or cci_alert_active) and not key_ma_down_veto
 

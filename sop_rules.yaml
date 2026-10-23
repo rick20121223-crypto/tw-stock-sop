@@ -153,6 +153,16 @@ indicators:
     # 舊行為不變；>1 時改成「連續N根都翻負」才觸發翻空示警，見
     # test_mtm_confirm_bars_whipsaw.py 的回測結果再決定要不要調大。
     confirm_bars: 1
+    # 2026-10-21課程：「MTM絕不能使用於中繼段或高檔震盪盤」，在盤整階段
+    # 用MTM會引發頻繁雙巴假訊號、嚴重凹單。這裡重用既有的三角收斂盤整
+    # 偵測（_detect_triangle_consolidation），當仍處於收斂整理區間、且
+    # 還沒帶量突破確認時（跟watch_rules.triangle_consolidation_downgrade
+    # 同一個條件：active且未volume_confirmed——一旦突破確認就不算「中繼」
+    # 了，MTM該恢復正常作用），MTM翻空不觸發「短線先出場」示警降級——
+    # 但MTM本身的reasons文字仍然照常附加（保留透明度），只是不讓它驅動
+    # conclusion，並在caveats說明為什麼被忽略。獨立開關，不用時可以直接
+    # 關掉退回原本「MTM只要翻空就示警」的行為。
+    suppress_during_consolidation: true
 
   cci:
     # 第三代領先指標，與 MTM 並列參考，不強制優先順序（見 watch_rules.cci_exit_alert_downgrade）。
