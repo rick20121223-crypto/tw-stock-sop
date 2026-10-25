@@ -1,77 +1,77 @@
 {
-  "week_start": "2026-10-12",
-  "week_end": "2026-10-16",
-  "generated_at": "2026-10-18",
+  "week_start": "2026-10-19",
+  "week_end": "2026-10-23",
+  "generated_at": "2026-10-25",
   "buy": [
     {
       "code": "2002",
       "market": "TW",
       "name": "中鋼",
-      "net": 170454735,
-      "days": 5
+      "net": 66909690,
+      "days": 4
     },
     {
-      "code": "5880",
+      "code": "3231",
       "market": "TW",
-      "name": "合庫金",
-      "net": 82391063,
-      "days": 5
+      "name": "緯創",
+      "net": 61671322,
+      "days": 4
     },
     {
-      "code": "2609",
+      "code": "1101",
       "market": "TW",
-      "name": "陽明",
-      "net": 82296535,
-      "days": 5
+      "name": "台泥",
+      "net": 41200931,
+      "days": 4
     },
     {
-      "code": "2885",
+      "code": "2324",
       "market": "TW",
-      "name": "元大金",
-      "net": 82137020,
-      "days": 5
+      "name": "仁寶",
+      "net": 35294403,
+      "days": 4
     },
     {
-      "code": "2891",
+      "code": "3481",
       "market": "TW",
-      "name": "中信金",
-      "net": 75183402,
-      "days": 5
+      "name": "群創",
+      "net": 27268767,
+      "days": 4
     },
     {
-      "code": "2610",
+      "code": "2801",
       "market": "TW",
-      "name": "華航",
-      "net": 66531952,
-      "days": 5
+      "name": "彰銀",
+      "net": 24559182,
+      "days": 4
     },
     {
-      "code": "2886",
+      "code": "1815",
       "market": "TW",
-      "name": "兆豐金",
-      "net": 65874046,
+      "name": "富喬",
+      "net": 24424361,
       "days": 5
     },
     {
       "code": "2884",
       "market": "TW",
       "name": "玉山金",
-      "net": 65011695,
-      "days": 5
+      "net": 23998342,
+      "days": 4
     },
     {
-      "code": "2887",
+      "code": "2886",
       "market": "TW",
-      "name": "台新新光金",
-      "net": 64871890,
-      "days": 5
+      "name": "兆豐金",
+      "net": 23145926,
+      "days": 4
     },
     {
-      "code": "1216",
+      "code": "2353",
       "market": "TW",
-      "name": "統一",
-      "net": 63665977,
-      "days": 5
+      "name": "宏碁",
+      "net": 22555588,
+      "days": 4
     }
   ],
   "sell": [
@@ -79,71 +79,71 @@
       "code": "6770",
       "market": "TW",
       "name": "力積電",
-      "net": -201367132,
-      "days": 5
-    },
-    {
-      "code": "2449",
-      "market": "TW",
-      "name": "京元電子",
-      "net": -50840515,
-      "days": 5
-    },
-    {
-      "code": "2327",
-      "market": "TW",
-      "name": "國巨*",
-      "net": -35901722,
-      "days": 5
+      "net": -42229091,
+      "days": 4
     },
     {
       "code": "1301",
       "market": "TW",
       "name": "台塑",
-      "net": -30509665,
-      "days": 5
+      "net": -36172131,
+      "days": 4
     },
     {
-      "code": "1303",
+      "code": "2327",
       "market": "TW",
-      "name": "南亞",
-      "net": -29394336,
-      "days": 5
+      "name": "國巨*",
+      "net": -25108266,
+      "days": 4
     },
     {
-      "code": "3231",
+      "code": "2312",
       "market": "TW",
-      "name": "緯創",
-      "net": -28979224,
-      "days": 5
+      "name": "金寶",
+      "net": -23801773,
+      "days": 4
     },
     {
-      "code": "2317",
+      "code": "2313",
       "market": "TW",
-      "name": "鴻海",
-      "net": -27356826,
-      "days": 5
+      "name": "華通",
+      "net": -19502354,
+      "days": 4
     },
     {
-      "code": "2308",
+      "code": "3576",
       "market": "TW",
-      "name": "台達電",
-      "net": -24153571,
-      "days": 5
+      "name": "聯合再生",
+      "net": -16759772,
+      "days": 4
     },
     {
-      "code": "3481",
+      "code": "2337",
       "market": "TW",
-      "name": "群創",
-      "net": -23839608,
-      "days": 5
+      "name": "旺宏",
+      "net": -15846627,
+      "days": 4
     },
     {
-      "code": "1815",
+      "code": "1314",
       "market": "TW",
-      "name": "富喬",
-      "net": -23594614,
-      "days": 5
+      "name": "中石化",
+      "net": -15645222,
+      "days": 4
+    },
+    {
+      "code": "1312",
+      "market": "TW",
+      "name": "國喬",
+      "net": -15368194,
+      "days": 4
+    },
+    {
+      "code": "2449",
+      "market": "TW",
+      "name": "京元電子",
+      "net": -13742334,
+      "days": 4
     }
   ],
   "tpex_days_available": 5
