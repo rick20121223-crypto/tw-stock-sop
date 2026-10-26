@@ -75,6 +75,16 @@ def _step1_four_key_prices(tf: str, latest: pd.Series,
     if latest["今開"] > latest["昨高"]:
         reasons.append("四關價：今開站上昨高，格局偏多")
         return 1
+
+    # 今開沒跌破昨低，但盤中走弱、今收已經跌破昨低（長黑棒）——原規則
+    # 只看今開，這種情況完全沒反應。只提示，不改變四關價分數。
+    if cfg.get("close_below_low_caveat", False) and pd.notna(latest.get("close")):
+        if latest["close"] < latest["昨低"]:
+            caveats.append(
+                f"⚠️ 今開雖未跌破昨低，但今收（{latest['close']:.2f}）已跌破昨低"
+                f"（{latest['昨低']:.2f}），盤中走弱力道不小，留意隔日是否延續轉弱"
+                "（僅提示，不計入四關價分數）"
+            )
     return 0
 
 
@@ -107,6 +117,13 @@ def _step2_ma(df: pd.DataFrame, tf: str, latest: pd.Series,
         elif (not above_fast) and fast_slope == "下彎":
             ma_bias += cfg["fast_down_penalty"]
             reasons.append(f"{fast_col} 下彎且股價跌破，短線動能偏空")
+        elif (not above_fast) and fast_slope == "上揚" and cfg.get("fast_cross_under_caveat", False):
+            # 股價已經跌破快均線，但快均線斜率還沒反應過來、仍判定上揚
+            # ——原規則兩個分支都接不到，完全沒提示。只加caveat，不計分。
+            caveats.append(
+                f"⚠️ 股價已跌破{fast_col}，但{fast_col}斜率尚未轉下彎（仍上揚），"
+                "短線動能出現轉弱跡象，留意是否持續走弱、轉成真正下彎（僅提示，不計分）"
+            )
     else:
         caveats.append(f"{fast_col} 資料不足")
 
@@ -336,6 +353,17 @@ def _step3_macd(df: pd.DataFrame, latest: pd.Series,
     bearish_divergence = _detect_bearish_divergence(df, cfg["divergence_lookback"])
     if bearish_divergence:
         reasons.append("⚠️ MACD 出現頂背離跡象（股價創高、柱狀圖未同步創高），先提高警覺、收緊停利")
+
+    # 還沒死叉時，原規則對「紅柱連續縮小」完全沒有反應，要等死叉才示警。
+    # 這裡只加caveat提前提示動能正在衰退，不計分、不影響conclusion。
+    fade_bars = cfg.get("momentum_fade_bars")
+    if fade_bars and not dead_cross and "MACD_hist" in df.columns and len(df) >= fade_bars:
+        hist_tail = df["MACD_hist"].tail(fade_bars)
+        if hist_tail.notna().all() and hist_tail.iloc[-1] > 0 and hist_tail.is_monotonic_decreasing:
+            caveats.append(
+                f"⚠️ MACD 柱狀體已連續{fade_bars}天收斂（動能減弱中，尚未死叉），"
+                "留意若持續收斂可能轉為死叉（僅提示，不計分）"
+            )
 
     return macd_bias, dead_cross, bearish_divergence
 

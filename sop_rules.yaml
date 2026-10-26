@@ -1,3 +1,11 @@
+# updated 2026-10-26：1815富喬案例分析發現三個提示盲點，各加一條
+#   caveat-only提示（不計分、不影響conclusion）：①四關價只查「今開」破
+#   昨低，今開沒破但今收已破底的長黑棒沒反應(four_key_prices.
+#   close_below_low_caveat)；②股價跌破快均線但快均線斜率還沒轉下彎時
+#   完全沒提示(ma_step.fast_cross_under_caveat)；③MACD還沒死叉前，柱狀
+#   體連續縮小的動能衰退沒有任何提示(macd.momentum_fade_bars)。三條都
+#   是純文字提示，待backtest驗證後再評估要不要正式納入評分，見各區塊
+#   內註解。
 # updated 2026-10-13：記錄KD365買進側Phase2回測結果(test_kd365_w_bottom_
 #   buy.py，21檔/24個月)，為「沒雙重確認就降級觀望」(Phase3)提供依據。
 #   比較W底突破時「均線+MACD兩者同步、KD365不同步」(A組) vs「均線+MACD+
@@ -73,6 +81,12 @@ indicators:
 
   four_key_prices:
     applicable_timeframes: ["日"]   # 四關價只在日線適用
+    close_below_low_caveat: true
+    # 2026-10-26新增：原規則只檢查「今開」是否跌破昨低，今開沒破但今收
+    # 已經跌破昨低的長黑棒（1815富喬2026-10-22案例：今開148.5未破昨低
+    # 145.0，但收139已經破底）完全不會被提示。只加caveat文字，不改變
+    # 四關價原本回傳的-1/0/1，不影響分數/結論，待有backtest依據再評估
+    # 是否要讓它真的參與判斷。
 
   ma_step:
     second_gate_ma: "MA10"     # 日線第二關快均線：站穩5MA之外，同時站上10MA視為止跌更明確
@@ -81,6 +95,12 @@ indicators:
     fast_down_penalty: -1      # 快均線下彎且跌破 → 扣分
     key_down_penalty: -2       # 生死線下彎 → 重扣分（任何買訊都要降級）
     key_up_bonus: 2            # 生死線上揚且站上 → 加分
+    fast_cross_under_caveat: true
+    # 2026-10-26新增：原規則「股價跌破快均線」只有在快均線斜率也同步轉
+    # 下彎時才會有任何反應（fast_down_penalty）；股價已經跌破快均線、但
+    # 快均線斜率還沒反應過來仍是「上揚」時（1815富喬2026-10-22案例：收
+    # 139已跌破當天MA5=146.8，但MA5斜率仍判定上揚），完全沒有提示。只加
+    # caveat文字，不計分、不影響結論，待backtest驗證後再評估。
 
   weekly_pullback_zone:
     min_bars: 4                # 至少要有4根K棒才判斷「止跌打底」
@@ -117,6 +137,14 @@ indicators:
     golden_cross_below_zero_bonus: 1     # 零軸下黃金交叉，僅弱勢反彈
     golden_cross_above_zero_bonus: 2     # 零軸上黃金交叉，動能轉強
     dead_cross_penalty: -2               # 死亡交叉
+    momentum_fade_bars: 3
+    # 2026-10-26新增：DIF還在訊號線之上（沒死叉）時，原規則完全不提示
+    # 動能正在衰退——1815富喬2026-10-22案例：MACD_hist連續3天收斂
+    # （4.77→4.21→2.51）才死叉前，規則上毫無反應。這裡偵測「尚未死叉，
+    # 但柱狀體連續N天單調縮小且目前仍是正值」就加caveat提示，N=3比照
+    # left_side_platform/cci既有confirm_bars=3的慣例，不是另外驗證過的
+    # 精確數字。只加caveat文字，不計分、不影響結論，待backtest驗證後再
+    # 評估是否要正式納入評分。
 
   kd365:
     # 但丁老師課程新增的第三代指標，跟MACD做Double Check。課程筆記原本
