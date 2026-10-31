@@ -1169,6 +1169,65 @@ def _step2_washout_recovery_with_support(df: pd.DataFrame, tf: str, latest: pd.S
 
 
 # ------------------------------------------------------------------
+# 2026-10-31新增：「反彈打到下彎均線測不過」——均線本身仍下彎，且最近
+# 幾天內最高價曾貼近/觸及均線但收盤從未真正站上，今天收盤仍在均線之下。
+# 見sop_rules.yaml indicators.rejected_rally_at_declining_ma區塊註解：
+# 24個月/13檔回測驗證過單獨使用這個型態就有空方傾斜（20日後報酬/負報酬
+# 比例明顯比無條件基準更弱更負），不需要額外搭配KD365死叉確認。只適用
+# 日線（生死線MA35）。_detect_rejected_rally_at_declining_ma()拆成獨立
+# 函式，供bear_regime_fake_rally_guard的空單提示文字也重用（見該區塊
+# 註解），不是只有這裡的扣分項用得到。
+# ------------------------------------------------------------------
+def _detect_rejected_rally_at_declining_ma(df: pd.DataFrame, tf: str, latest: pd.Series) -> bool:
+    cfg = RULES["indicators"].get("rejected_rally_at_declining_ma", {})
+    if not cfg.get("enabled", True) or tf != "日":
+        return False
+
+    ma_col = KEY_MA.get(tf)
+    if ma_col is None or ma_col not in df.columns or pd.isna(latest.get(ma_col)):
+        return False
+
+    slope_lookback = cfg.get("slope_lookback", 3)
+    reject_lookback = cfg.get("reject_lookback_bars", 5)
+    tolerance = cfg.get("approach_tolerance", 0.02)
+    if len(df) < max(slope_lookback, reject_lookback) + 1:
+        return False
+
+    ma_series = df[ma_col]
+    ma_old = ma_series.iloc[-1 - slope_lookback]
+    if pd.isna(ma_old):
+        return False
+    ma_declining = ma_series.iloc[-1] < ma_old
+    if not ma_declining:
+        return False
+
+    window = df.iloc[-(reject_lookback + 1):-1]  # 過去reject_lookback天，不含今天
+    ma_window = ma_series.iloc[-(reject_lookback + 1):-1]
+    if ma_window.isna().any():
+        return False
+    approached = (window["max"] >= ma_window * (1 - tolerance)).any()
+    never_closed_above = (window["close"] < ma_window).all()
+    today_still_below = latest["close"] < latest[ma_col]
+
+    return bool(approached and never_closed_above and today_still_below)
+
+
+def _step2_rejected_rally_at_declining_ma(df: pd.DataFrame, tf: str, latest: pd.Series,
+                                           reasons: List[str]) -> float:
+    cfg = RULES["indicators"].get("rejected_rally_at_declining_ma", {})
+    if not cfg.get("enabled", True):
+        return 0.0
+    if _detect_rejected_rally_at_declining_ma(df, tf, latest):
+        reasons.append(
+            "⚠️ 反彈已測試生死線失敗（貼近但收盤未站上），均線本身仍下彎，"
+            "依但丁老師規則視為順勢加碼空點；回測顯示20日後報酬/負報酬比例"
+            "明顯比無條件基準更弱更負，扣分"
+        )
+        return cfg.get("penalty", -1)
+    return 0.0
+
+
+# ------------------------------------------------------------------
 # 2026-10-23新增：「兩次腳未破」廣義化版本。原本_detect_ma120_second_leg
 # 只認「半年線(MA120)」當支撐參考、只支援日線，但但丁老師課程講的其實
 # 更廣義——「左側歷史平台區（或前低）打出兩次腳，底不破就不能砍單」，
@@ -1384,6 +1443,7 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     ma120_second_leg = _detect_ma120_second_leg(df, tf)
     platform_second_leg_level = _detect_platform_second_leg(df, tf, latest, platform_support_levels)
     ma_bias += _step2_washout_recovery_with_support(df, tf, latest, ma120_second_leg, reasons)
+    ma_bias += _step2_rejected_rally_at_declining_ma(df, tf, latest, reasons)
     extreme_deviation = _check_extreme_deviation(tf, latest, reasons)
     weekly_blowoff = _check_weekly_blowoff(tf, df, latest, reasons, caveats)
 
@@ -1566,6 +1626,14 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
                 "且今日站穩今開才考慮小量試單）"
             )
             caveats.append("若已持有多單，逢弱勢反彈建議執行減碼/買保險，暫不追高")
+            # 2026-10-31：這裡只能講「均線還沒轉向」這種保守說法，不能
+            # 斷言「反彈測試均線被打回」——能走到這個分支代表conclusion
+            # 原本是買進/加碼，數學上一定代表close>=KEY_MA[tf]（否則
+            # key_ma_down_veto早就先把conclusion判成賣出減碼了），跟
+            # _detect_rejected_rally_at_declining_ma()要求的close<ma_col
+            # 互斥，不可能同時成立——真正的「反彈測試均線失敗」提示在
+            # _step2_rejected_rally_at_declining_ma()那邊觸發時另外給
+            # （那裡conclusion還沒決定，close<ma_col才有可能發生）。
             caveats.append("均線本身仍下彎尚未轉向，若股價撐不住再度跌破生死線，可視為順勢加碼空點的訊號")
 
     # ---- 乖離過大：不論多空方向，嚴禁在此追高摸底，買訊一律降級觀望 ----

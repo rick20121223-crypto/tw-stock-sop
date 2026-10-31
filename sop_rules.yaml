@@ -159,6 +159,21 @@ indicators:
     lookback_bars: 3   # 過去幾天內曾跌破MA35才算「剛剛假跌破」，比照test_washout_recovery_buy.py的LOOKBACK_BARS
     bonus: 1
 
+  rejected_rally_at_declining_ma:
+    # 2026-10-31新增。依1030錄音：均線仍下彎時，反彈若貼近均線卻測不過
+    # （收盤從未真正站上），是「順勢加碼空點」的型態。用test_rejected_
+    # rally_at_declining_ma_backtest.py對24個月/13檔回測：單獨使用這個
+    # 型態，20日後平均報酬3.64%/負報酬比例47.4%，明顯比無條件基準
+    # (7.68%/38.2%)更弱更負，10日/5日方向一致。另外測過加上KD365死叉
+    # 同步確認的版本，樣本大幅縮小(74筆)、優勢沒有明顯更好，所以不要求
+    # KD365同步確認，單獨使用這個價格型態就加（扣）分。只適用日線
+    # （生死線MA35），penalty接進ma_bias。
+    enabled: true
+    slope_lookback: 3        # 比照ma_slope()預設lookback，判斷均線本身是否下彎
+    reject_lookback_bars: 5  # 過去幾天內找「曾經貼近均線但沒站上」的反彈測試
+    approach_tolerance: 0.02 # 最高價在均線以下2%以內視為「貼近/碰到」
+    penalty: -1
+
   min60_warning_zone:
     # 2026-10-21課程新增：60分線新增60MA，跟原本的20MA組成「多空預警
     # 區間」。跌破20MA＝第一預警（多單第一步撤離/減碼，或空單第一步
