@@ -510,10 +510,17 @@ def _step5_mtm(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str])
 # 不升級，真正要買進仍須四關價/均線/MACD/量能同步確認）。
 # 極端值（|CCI|>200）只附加提示，不改變結論。
 # ------------------------------------------------------------------
-def _step5b_cci(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str], caveats: List[str]) -> bool:
+def _step5b_cci(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str],
+                 caveats: List[str]) -> tuple:
+    """回傳 (cci_exit_alert: bool, cci_bias: float)。
+    cci_exit_alert 行為完全不變（只有熊市折返才觸發，二線輔助降級用）。
+    cci_bias 是2026-10-31新增，供scoring.mode="weighted_48_20_20"使用：
+    重用這裡本來就有算的bull_foldback/bear_foldback狀態，不是另外設計的
+    新門檻（+1/-1/0），不計入既有的legacy score公式。
+    """
     cfg = RULES["indicators"]["cci"]
     if tf not in cfg.get("applicable_timeframes", []) or pd.isna(latest.get("CCI")):
-        return False
+        return False, 0.0
 
     signal_threshold = cfg["signal_threshold"]
     extreme_threshold = cfg["extreme_threshold"]
@@ -530,7 +537,7 @@ def _step5b_cci(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str]
     recent = df.tail(cfg["lookback_bars"])
     prior = recent["CCI"].iloc[:-1]
     if prior.empty:
-        return False
+        return False, 0.0
 
     if confirm_bars <= 1:
         # 舊版行為（預設）：曾經站上/跌破門檻，這一根折返就立刻觸發
@@ -555,15 +562,51 @@ def _step5b_cci(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str]
             f"⚠️ CCI由+{signal_threshold:.0f}之上折返跌破+{signal_threshold:.0f}，短線動能轉弱疑慮，"
             "比照MTM列入領先指標示警（二線輔助，不凌駕均線/MACD）"
         )
-        return True
+        return True, -1.0
 
     if bull_foldback:
         caveats.append(
             f"CCI由-{signal_threshold:.0f}之下折返站上-{signal_threshold:.0f}，短線止跌訊號，"
             "但屬二線輔助指標，不單獨作為買進依據，仍須均線/MACD/支撐同步確認"
         )
+        return False, 1.0
 
-    return False
+    return False, 0.0
+
+
+# ------------------------------------------------------------------
+# 2026-10-31新增：scoring.mode="weighted_48_20_20"用的正規化/加權計分，
+# 對照1030錄音「程式單權重配比」（均線48%／四關價20%／指標組20%）。
+# 純函式，不讀取RULES全域狀態，方便獨立測試（見test_scoring_weighted_
+# 48_20_20.py）；預設scoring.mode="legacy"時完全不會呼叫到這裡。
+# ------------------------------------------------------------------
+def _normalize_bias(raw_bias: float, max_abs: float) -> float:
+    """把任意範圍的bias正規化到[-1, 1]。max_abs<=0時回傳0，避免除以0。"""
+    if not max_abs:
+        return 0.0
+    return max(-1.0, min(1.0, raw_bias / max_abs))
+
+
+def _weighted_score_48_20_20(four_key_bias: float, ma_bias: float, macd_bias: float,
+                              kd365_bias: float, cci_bias: float, tf: str, cfg: dict) -> float:
+    """依均線48%／四關價20%／指標組20%計算score。指標組在CCI不適用的
+    週期（週/日，見sop_rules.yaml indicators.cci.applicable_timeframes）
+    只用MACD+KD平均，60分/5分才併入CCI做三項平均。
+    """
+    norm_ma = _normalize_bias(ma_bias, cfg["ma_bias_max_abs"])
+    norm_four_key = _normalize_bias(four_key_bias, cfg["four_key_bias_max_abs"])
+    norm_macd = _normalize_bias(macd_bias, cfg["macd_bias_max_abs"])
+    norm_kd = _normalize_bias(kd365_bias, cfg["kd365_bias_max_abs"])
+
+    if tf in RULES["indicators"]["cci"].get("applicable_timeframes", []):
+        norm_cci = _normalize_bias(cci_bias, cfg["cci_bias_max_abs"])
+        indicator_group = (norm_macd + norm_kd + norm_cci) / 3
+    else:
+        indicator_group = (norm_macd + norm_kd) / 2
+
+    core = (norm_ma * cfg["ma_weight_pct"] + norm_four_key * cfg["four_key_weight_pct"]
+            + indicator_group * cfg["indicator_group_weight_pct"])
+    return core * cfg["scale"]
 
 
 # ------------------------------------------------------------------
@@ -1265,7 +1308,7 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     volume_bias, volume_bear_confirm = _step4_volume(
         df, tf, latest, macd_bearish_divergence, reasons, caveats)
     mtm_exit_alert = _step5_mtm(df, tf, latest, reasons)
-    cci_exit_alert = _step5b_cci(df, tf, latest, reasons, caveats)
+    cci_exit_alert, cci_bias = _step5b_cci(df, tf, latest, reasons, caveats)
 
     fast_col = FAST_MA.get(tf)
     fast_slope = ma_slope(df, fast_col, lookback=slope_lookback) if fast_col else "資料不足"
@@ -1298,8 +1341,18 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     extreme_deviation = _check_extreme_deviation(tf, latest, reasons)
     weekly_blowoff = _check_weekly_blowoff(tf, df, latest, reasons, caveats)
 
-    score = (four_key_bias * scoring_cfg["four_key_weight"] + ma_bias * scoring_cfg["ma_weight"]
-             + macd_bias + volume_bias + platform_bias)
+    # 2026-10-31新增：scoring.mode="weighted_48_20_20"時改用均線48%／
+    # 四關價20%／指標組20%（見_weighted_score_48_20_20註解）；OBV/左側
+    # 平台(volume_bias/platform_bias)不在但丁老師這次講的三層結構裡，
+    # 兩種mode都維持原本的額外加分方式不變。預設仍是legacy，行為不變。
+    if scoring_cfg.get("mode", "legacy") == "weighted_48_20_20":
+        core_score = _weighted_score_48_20_20(
+            four_key_bias, ma_bias, macd_bias, kd365_bias, cci_bias, tf,
+            scoring_cfg["weighted_48_20_20"])
+        score = core_score + volume_bias + platform_bias
+    else:
+        score = (four_key_bias * scoring_cfg["four_key_weight"] + ma_bias * scoring_cfg["ma_weight"]
+                 + macd_bias + volume_bias + platform_bias)
 
     # ---- 判定「賣出減碼」：符合任一條件即可（見 SOP 規則）----
     four_key_broken = tf == "日" and four_key_bias == -1

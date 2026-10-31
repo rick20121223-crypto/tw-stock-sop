@@ -72,7 +72,7 @@ def evaluate_timeframe_modified(df: pd.DataFrame, timeframe_label: str) -> Verdi
     volume_bias, volume_bear_confirm = sd._step4_volume(
         df, tf, latest, macd_bearish_divergence, reasons, caveats)
     mtm_exit_alert = sd._step5_mtm(df, tf, latest, reasons)
-    cci_exit_alert = sd._step5b_cci(df, tf, latest, reasons, caveats)
+    cci_exit_alert, _cci_bias = sd._step5b_cci(df, tf, latest, reasons, caveats)
 
     # ★ 唯一的修改：volume_bear_confirm 補上均線同步閘門（比照dead_cross_confirmed）
     volume_bear_confirm_gated = volume_bear_confirm and ma_bias < 0

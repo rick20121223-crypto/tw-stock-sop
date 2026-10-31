@@ -1,3 +1,14 @@
+# updated 2026-10-31：根據1030錄音「程式單權重配比」筆記，新增可選的
+#   scoring.mode="weighted_48_20_20"（均線48%／四關價20%／指標組
+#   (MACD+KD+CCI)20%），對照但丁老師原始程式單的加權計分邏輯。預設
+#   scoring.mode仍是"legacy"（現有公式完全不變），只有手動切換才會套用
+#   新公式——還沒backtest驗證過，用test_scoring_weighted_48_20_20.py只
+#   驗證了公式本身的計算正確性，跨股票的實際分類差異待之後用類似
+#   test_combine_weighting_compare.py的方式比對。OBV/左側平台
+#   (volume_bias/platform_bias)不在但丁老師這次講的三層結構裡，兩種
+#   mode都維持原本的額外加分方式不變，不套用這組百分比。詳見本檔
+#   indicators.scoring區塊註解，以及sop_decision.py的_normalize_bias/
+#   _weighted_score_48_20_20/_step5b_cci。
 # updated 2026-10-30：根據1030實戰課程筆記補強第二代指標，兩項更新：
 #   ①CCI參數依課程指示從14改為12（配合下方indicators.cci.period），已套用
 #   於stock_core.calc_cci()——但原有confirm_bars=3是在period=14下用
@@ -305,6 +316,23 @@ indicators:
     ma_weight: 2
     confidence_mid_abs_score: 4   # |score| >= 此值 → 信心中
     confidence_low_abs_score: 2   # |score| < 此值 → 信心低（介於兩者之間為中）
+    mode: "legacy"   # "legacy"（現有公式，預設）或 "weighted_48_20_20"（見下方區塊）
+    weighted_48_20_20:
+      # 2026-10-31新增，對照1030錄音「程式單權重配比」：均線48%／四關價20%／
+      # 指標組(MACD+KD+CCI)20%。各bias先各自正規化到[-1,1]（除以下方
+      # *_max_abs，數值依各指標目前的bonus/penalty設定推算），再套用百分比；
+      # CCI只在60分/5分適用（cci區塊的applicable_timeframes），週/日的指標組
+      # 只用MACD+KD兩項平均。scale把正規化後的core(-1~+1)放大，沿用現有
+      # buy_rules/sell_rules.score_threshold(±3)當門檻，不用另外改門檻數字。
+      ma_weight_pct: 0.48
+      four_key_weight_pct: 0.20
+      indicator_group_weight_pct: 0.20
+      ma_bias_max_abs: 4       # fast_up(1)+second_gate(1)+key_up(2)，日線口徑
+      four_key_bias_max_abs: 1
+      macd_bias_max_abs: 3     # dif(±1) + golden_cross_above_zero(2)/dead_cross(-2) 疊加後的上限
+      kd365_bias_max_abs: 1
+      cci_bias_max_abs: 1
+      scale: 5
 
 # ==================================================================
 # 買進 buy_rules
