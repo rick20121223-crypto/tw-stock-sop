@@ -16,7 +16,10 @@
 """
 import pandas as pd
 
-from sop_decision import RULES, _normalize_bias, _weighted_score_48_20_20, _step5b_cci, evaluate_timeframe
+from sop_decision import (
+    RULES, _normalize_bias, _score_thresholds, _weighted_score_48_20_20, _step5b_cci,
+    evaluate_timeframe,
+)
 from stock_core import run_all_indicators
 
 
@@ -107,6 +110,25 @@ def test_cci_bias_neutral_when_no_foldback():
     print("✅ CCI無折返時cci_bias=0")
 
 
+def test_score_thresholds_legacy_mode_uses_buy_sell_rules():
+    buy_cfg = {"score_threshold": 3}
+    sell_cfg = {"score_threshold": -3}
+    weighted_cfg = {"buy_threshold": 0.77, "sell_threshold": -1.43}
+    buy_t, sell_t = _score_thresholds("legacy", buy_cfg, sell_cfg, weighted_cfg)
+    assert (buy_t, sell_t) == (3, -3), "legacy模式應該用buy_rules/sell_rules.score_threshold"
+    print("✅ legacy模式門檻取自buy_rules/sell_rules.score_threshold")
+
+
+def test_score_thresholds_weighted_mode_uses_dedicated_values():
+    buy_cfg = {"score_threshold": 3}
+    sell_cfg = {"score_threshold": -3}
+    weighted_cfg = {"buy_threshold": 0.77, "sell_threshold": -1.43}
+    buy_t, sell_t = _score_thresholds("weighted_48_20_20", buy_cfg, sell_cfg, weighted_cfg)
+    assert (buy_t, sell_t) == (0.77, -1.43), \
+        "weighted_48_20_20模式不該沿用legacy的±3，應該用weighted_48_20_20.buy_threshold/sell_threshold"
+    print("✅ weighted_48_20_20模式門檻取自weighted_48_20_20.buy_threshold/sell_threshold（不沿用legacy±3）")
+
+
 def test_default_mode_is_legacy_and_switching_changes_score():
     n = 300
     closes = [100 + i * 0.3 for i in range(n)]
@@ -140,6 +162,8 @@ if __name__ == "__main__":
     test_cci_bias_bear_foldback()
     test_cci_bias_bull_foldback()
     test_cci_bias_neutral_when_no_foldback()
+    test_score_thresholds_legacy_mode_uses_buy_sell_rules()
+    test_score_thresholds_weighted_mode_uses_dedicated_values()
     test_default_mode_is_legacy_and_switching_changes_score()
     print()
     print("全部通過。")

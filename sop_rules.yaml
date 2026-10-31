@@ -333,6 +333,20 @@ indicators:
       kd365_bias_max_abs: 1
       cci_bias_max_abs: 1
       scale: 5
+      # buy_threshold/sell_threshold：不能直接沿用buy_rules/sell_rules.
+      # score_threshold(±3)——那是照legacy公式的尺度調的，直接套用在這組
+      # 正規化後的分數上，buy門檻幾乎打不到（21檔x最近15個交易日的日線
+      # 真實回測，legacy模式買進16次/加碼12次，直接沿用±3的weighted模式
+      # 買進0次，見test_scoring_weight_compare.py）。這兩個數字改用「百分位
+      # 對應」校準：先算legacy的score=3／-3各自落在legacy自己score分布的
+      # 第幾百分位（61.3%／32.1%），再取weighted_score分布的同一百分位
+      # 對應回來，用同一組21檔x15交易日資料驗證過：校準後weighted模式的
+      # 買進/加碼/觀望/賣出減碼分布跟legacy幾乎一致（169/117/17/12 vs
+      # 168/119/16/12），逐日結論相同比例96.8%。2026-10-31計算，之後
+      # watchlist組成或legacy公式有變動時應該重新跑一次校準，不是永久不變
+      # 的數字。
+      buy_threshold: 0.77
+      sell_threshold: -1.43
 
 # ==================================================================
 # 買進 buy_rules

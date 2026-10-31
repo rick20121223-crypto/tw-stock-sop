@@ -609,6 +609,18 @@ def _weighted_score_48_20_20(four_key_bias: float, ma_bias: float, macd_bias: fl
     return core * cfg["scale"]
 
 
+def _score_thresholds(mode: str, buy_cfg: dict, sell_cfg: dict, weighted_cfg: dict) -> tuple:
+    """回傳(buy_threshold, sell_threshold)。weighted_48_20_20模式必須用它
+    自己專屬的門檻（weighted_cfg["buy_threshold"]/["sell_threshold"]），
+    不能沿用legacy的buy_rules/sell_rules.score_threshold(±3)——兩種公式
+    尺度不同，直接共用門檻會讓weighted模式幾乎發不出買進訊號（見
+    sop_rules.yaml該區塊註解的校準說明）。
+    """
+    if mode == "weighted_48_20_20":
+        return weighted_cfg["buy_threshold"], weighted_cfg["sell_threshold"]
+    return buy_cfg["score_threshold"], sell_cfg["score_threshold"]
+
+
 # ------------------------------------------------------------------
 # 把局部高/低擺動點依價位聚成群集：彼此價位相差在 tolerance 以內的算同一群
 # （同一個「反覆被測試」的價位帶），只有群內點數 >= min_touches 才算「整理平台」
@@ -1467,12 +1479,15 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
         caveats.append("MACD出現警戒訊號，但均線與量能尚未同步走壞，先觀望、不追空")
     elif strong_bullish:
         conclusion = "加碼" if (ma_bias >= add_cfg["addon_ma_bias"] and volume_bias > 0) else "買進"
-    elif score >= buy_cfg["score_threshold"]:
-        conclusion = "買進"
-    elif score <= sell_cfg["score_threshold"]:
-        conclusion = "賣出減碼"
     else:
-        conclusion = "觀望"
+        buy_threshold, sell_threshold = _score_thresholds(
+            scoring_cfg.get("mode", "legacy"), buy_cfg, sell_cfg, scoring_cfg["weighted_48_20_20"])
+        if score >= buy_threshold:
+            conclusion = "買進"
+        elif score <= sell_threshold:
+            conclusion = "賣出減碼"
+        else:
+            conclusion = "觀望"
 
     # ---- 乖離過大：不論多空方向，嚴禁在此追高摸底，買訊一律降級觀望 ----
     if extreme_deviation and watch_cfg.get("extreme_deviation_downgrade", True) and conclusion in ("買進", "加碼"):
