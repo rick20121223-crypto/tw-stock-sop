@@ -144,6 +144,21 @@ indicators:
     # test_intraday_signals_buy.py）。
     bonus: 1
 
+  washout_recovery_second_leg:
+    # 2026-10-31新增。原始SOP講「左側平台支撐未破」跟「假跌破站回(夾起單
+    # 洗盤)」本來就是綁在一起講的概念，不是獨立訊號——用test_washout_
+    # recovery_buy.py單獨測「夾起單」本身，24個月/13檔回測5/10/20日報酬
+    # 跟勝率都比無條件基準差；但用test_washout_recovery_with_support_
+    # backtest.py測「夾起單 AND 兩次腳未破(ma120_second_leg)同時成立」，
+    # 10日報酬4.05%/勝率63.1%明顯優於無條件基準3.50%/57.0%，20日/5日也
+    # 都優於基準，兩者任一單獨使用都沒有這個優勢。另外測過加上MTM勾起的
+    # 三重確認版，樣本只剩22筆太小不可信、數字反而變差，所以不要求MTM。
+    # 只適用日線（MA35/MA120皆為日線生死線概念，跟ma120_second_leg的
+    # applicable_timeframes一致），bonus接進ma_bias。
+    enabled: true
+    lookback_bars: 3   # 過去幾天內曾跌破MA35才算「剛剛假跌破」，比照test_washout_recovery_buy.py的LOOKBACK_BARS
+    bonus: 1
+
   min60_warning_zone:
     # 2026-10-21課程新增：60分線新增60MA，跟原本的20MA組成「多空預警
     # 區間」。跌破20MA＝第一預警（多單第一步撤離/減碼，或空單第一步

@@ -57,19 +57,38 @@ def _make_base_df(n: int = 300, seed: int = 0) -> pd.DataFrame:
                           "min": low, "close": close, "volume": volume})
 
 
-def _make_bear_slope_but_above_key_df(today_above_open: bool = True) -> pd.DataFrame:
+def _make_bear_slope_but_above_key_df(today_above_open: bool = True,
+                                       inject_washout: bool = True) -> pd.DataFrame:
     """構造「生死線(MA35)下彎、但股價目前仍站在MA35之上」的日線資料
     （key_ma_down_veto不觸發的前提，否則根本走不到這條新規則）。快均線
     (MA5)設成上揚，讓既有的buy_add_sync_gate(ma_slope_up這項)不會額外
     把結論打回觀望，干擾這條新規則本身的行為觀察——短線反彈但生死線
     未轉，正好就是這條規則要測的情境。
+
+    inject_washout=True時，額外在「夾起單」lookback視窗內明確安排一天
+    close<MA35、今天收回站上，確保washout_recovery真的成立；=False時
+    把視窗內的MA35/close都設成close明顯站在MA35之上（不是貼著邊緣），
+    確保washout_recovery確實不成立，不是靠隨機base資料湊出來的（原始
+    版本沒控制這段，idx_old的MA35=110剛好比隨機資料的close還高，意外
+    讓washout條件湊巧成立，沒測到真正要測的情境）。
     today_above_open控制今天收盤是否站穩今開（refinement 1的同日確認鍵）。"""
     df = run_all_indicators(_make_base_df(), "日")
     lookback = RULES["indicators"]["ma_slope"]["lookback"]
     idx_old, idx_last = df.index[-1 - lookback], df.index[-1]
+
+    # 先處理夾起單視窗（offset=1..washout_lookback，相對idx_last），idx_old
+    # 剛好可能落在這個視窗內（兩者lookback數字恰好都是3）——所以idx_old/
+    # idx_last的均線斜率定義值一定要在這段迴圈「之後」才設，確保不會被蓋掉。
+    washout_lookback = RULES["indicators"]["washout_recovery_second_leg"]["lookback_bars"]
+    for offset in range(1, washout_lookback + 1):
+        idx = df.index[-1 - offset]
+        df.loc[idx, "MA35"] = 100.0
+        df.loc[idx, "close"] = 90.0 if (inject_washout and offset == 1) else 103.0
+
     df.loc[idx_old, "MA35"] = 110.0
-    df.loc[idx_last, "MA35"] = 100.0   # MA35（生死線）下彎
     df.loc[idx_old, "MA5"] = 95.0
+    df.loc[idx_old, "close"] = 115.0   # 明確站在MA35(110)之上，避免跟隨機base資料湊出意外的washout
+    df.loc[idx_last, "MA35"] = 100.0   # MA35（生死線）下彎
     df.loc[idx_last, "MA5"] = 103.0    # MA5（快均線）上揚，短線反彈
     df.loc[idx_last, "close"] = 105.0  # 股價仍站在MA35(100)之上，不觸發veto
     df.loc[idx_last, "今開"] = 106.0 if not today_above_open else 103.0
@@ -124,6 +143,19 @@ def test_no_support_downgrades_buy_to_watch_with_dual_caveats():
     assert "減碼" in joined and ("買保險" in joined or "保險" in joined), "應該附上多單提示"
     assert "空單" in joined or "空點" in joined, "應該附上空單提示"
     print("✅ 無左側支撐：買進->觀望，且附上多單/空單雙向提示")
+
+
+def test_second_leg_without_washout_no_longer_exempts_on_daily():
+    """2026-10-31補強：日線的話，光有「兩次腳未破」不夠，backtest顯示
+    單獨使用任一條件都沒有優於無條件基準的證據，必須夾起單也同時成立
+    才放行小量試單——沒有夾起單時，即使ma120_second_leg=True，也該
+    降級為觀望，不是買進。"""
+    df = _make_bear_slope_but_above_key_df(today_above_open=True, inject_washout=False)
+    with _neutralize_other_steps("加碼", ma120_second_leg=True):
+        v = sd.evaluate_timeframe(df, "日")
+    assert v.conclusion == "觀望", \
+        f"日線只有兩次腳未破、沒有夾起單時，應該降級為觀望（收緊後的標準），實際={v.conclusion}"
+    print("✅ 日線：只有兩次腳未破、沒有夾起單時，不再放行小量試單（已改成要求兩者同時成立）")
 
 
 def test_support_and_held_open_caps_add_to_buy():
@@ -182,6 +214,7 @@ def test_guard_does_not_touch_existing_sell_conclusion():
 
 if __name__ == "__main__":
     test_no_support_downgrades_buy_to_watch_with_dual_caveats()
+    test_second_leg_without_washout_no_longer_exempts_on_daily()
     test_support_and_held_open_caps_add_to_buy()
     test_support_without_holding_open_still_downgrades_to_watch()
     test_platform_second_leg_also_counts_as_support()
