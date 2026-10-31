@@ -451,7 +451,7 @@ def run_all_indicators(df: pd.DataFrame, timeframe_label: str = "日") -> pd.Dat
     df = calc_macd(df)
     df = calc_obv(df)
     df = calc_bbi(df)
-    df = calc_cci(df)   # CCI，配合MTM作為三代領先指標
+    df = calc_cci(df, period=12)   # CCI，配合MTM作為三代領先指標；2026-10-30課程更新參數14→12
     df = calc_kd(df)   # 既有 KD(9,3,3) -> K/D 欄位，週線規則(_step2_weekly_kd_golden_cross)用這組
     df = calc_kd(df, n=36, m1=5, m2=5, k_col="K365", d_col="D365")  # 新增 KD(36,5,5)，供日/60分/5分的Double Check用
     return df

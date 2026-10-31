@@ -12,3 +12,7 @@ data/historical_backtest.csv
 
 # 真實持股成本/股數（停損規則用），repo是公開的，這份資料不可進版控
 data/my_holdings.csv
+
+# 指標搭配回測模組：本機抓取的原始資料快取與跑出來的報告，不需要進版控
+backtest/cache/
+backtest/output/

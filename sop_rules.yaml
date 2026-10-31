@@ -1,3 +1,16 @@
+# updated 2026-10-30：根據1030實戰課程筆記補強第二代指標，兩項更新：
+#   ①CCI參數依課程指示從14改為12（配合下方indicators.cci.period），已套用
+#   於stock_core.calc_cci()——但原有confirm_bars=3是在period=14下用
+#   test_short_term_whipsaw_fix_compare.py驗證過的，period改12後尚未重新
+#   backtest，confirm_bars=3是否仍適用待確認；②KD(36,5,5)課程重新定位為
+#   「第二代（跟MACD並列雙重驗證）」，原本indicators.kd365註解寫「第三代」，
+#   純文字修正，不影響任何計分/否決邏輯。
+#   另外筆記提到的「CCI最快示警→MTM同步確認→KD365雙重確認→均線裁決」
+#   明確優先順序，以及「MACD零軸下+KD365+CCI三者同步死叉」的新否決條件，
+#   都還沒backtest驗證——目前cci/mtm刻意維持role: secondary「並列參考、
+#   不強制優先順序」，也沒有新增三者死叉共振的否決規則。先記錄在這裡，
+#   待之後跑backtest驗證後，再評估要不要用跟kd365_veto_enabled同一套流程
+#   （新增設定開關+對應test_*.py）正式納入，不要未驗證就直接改預設行為。
 # updated 2026-10-26：1815富喬案例分析發現三個提示盲點，各加一條
 #   caveat-only提示（不計分、不影響conclusion）：①四關價只查「今開」破
 #   昨低，今開沒破但今收已破底的長黑棒沒反應(four_key_prices.
@@ -147,7 +160,9 @@ indicators:
     # 評估是否要正式納入評分。
 
   kd365:
-    # 但丁老師課程新增的第三代指標，跟MACD做Double Check。課程筆記原本
+    # 但丁老師課程新增的指標，跟MACD做Double Check；2026-10-30課程筆記
+    # 重新定位為「第二代」（跟MACD並列的雙重驗證組），此前本檔註解誤寫
+    # 「第三代」，此處修正，純文字、不影響任何計分/否決邏輯。課程筆記原本
     # 寫「365」，經券商App參數截圖比對確認為「KD-隨機指標(常用)」預設：
     # 期間36／RSVt權值5／Kt權值5，不是單一個period=365的數字。
     # 只適用日/60分/5分，週線與月線維持原本的KD(9,3,3)（weekly_kd_
@@ -195,6 +210,12 @@ indicators:
   cci:
     # 第三代領先指標，與 MTM 並列參考，不強制優先順序（見 watch_rules.cci_exit_alert_downgrade）。
     # 二線輔助指標：不接進 score，只用來觸發跟MTM同等級的「觀望」示警，不凌駕MTM/MACD/均線。
+    # period：CCI計算用的回看期數，實際算式在stock_core.calc_cci()，這裡僅作
+    # 參數紀錄用（跟kd365.n/m1/m2同一套慣例，呼叫端未讀取此值）。2026-10-30
+    # 課程更新從14改為12（簡化成一條精準線，反應更快），見本檔開頭2026-10-30
+    # changelog；confirm_bars=3是在period=14下backtest驗證的，period改12後
+    # 尚未重新驗證。
+    period: 12
     applicable_timeframes: ["60分", "5分"]
     signal_threshold: 100      # 突破後折返穿越 ±100 視為轉折訊號
     extreme_threshold: 200     # 突破 ±200 視為極端訊號，需特別關注（僅提示，不變更結論）
