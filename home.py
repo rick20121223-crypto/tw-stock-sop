@@ -27,6 +27,7 @@ API 金鑰設定（部署到 Streamlit Community Cloud 時）：
 """
 
 import concurrent.futures
+from collections import Counter
 from datetime import date, datetime
 
 import streamlit as st
@@ -167,10 +168,31 @@ buy_count = sum(1 for r in rows if r["分類"] in ("買進", "加碼"))
 sell_count = sum(1 for r in rows if r["分類"] == "賣出減碼")
 watch_count = sum(1 for r in rows if r["分類"] == "觀望")
 
+# 代表日期取全部股票「資料日期」裡出現次數最多的那天（多數股票同一天
+# 收盤，用眾數代表整份清單）；個別股票資料過舊的警示仍在表格各列的
+# _data_date_html 處理，這裡只是整份清單的摘要，不重複判斷新舊。
+date_counts = Counter(r["資料日期"] for r in rows if r.get("資料日期"))
+if date_counts:
+    rep_date_raw = date_counts.most_common(1)[0][0]
+    try:
+        rep_date = datetime.strptime(rep_date_raw, "%Y-%m-%d").strftime("%m/%d")
+    except ValueError:
+        rep_date = rep_date_raw
+else:
+    rep_date = "—"
+
+st.caption(
+    f"📅 {rep_date} 收盤　・　🔺 買進／加碼 {buy_count} 檔　"
+    f"・　🔻 賣出減碼 {sell_count} 檔　・　⚪ 觀望 {watch_count} 檔"
+)
+
 c1, c2, c3 = st.columns(3)
-c1.metric("🔺 買進／加碼", f"{buy_count} 檔")
-c2.metric("🔻 賣出減碼", f"{sell_count} 檔")
-c3.metric("⚪ 觀望", f"{watch_count} 檔")
+with c1, st.container(border=True):
+    st.metric("🔺 買進／加碼", f"{buy_count} 檔")
+with c2, st.container(border=True):
+    st.metric("🔻 賣出減碼", f"{sell_count} 檔")
+with c3, st.container(border=True):
+    st.metric("⚪ 觀望", f"{watch_count} 檔")
 
 st.divider()
 
