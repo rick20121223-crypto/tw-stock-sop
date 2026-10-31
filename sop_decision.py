@@ -549,8 +549,18 @@ def _step5b_cci(df: pd.DataFrame, tf: str, latest: pd.Series, reasons: List[str]
         # whipsaw.py）發現CCI示警出現在30.9%的雜訊反轉裡，僅次於Step6左側
         # 平台，推測是CCI貼著±100來回折返被單根雜訊放大；confirm_bars=1
         # 時完全不影響舊行為。
-        was_above = (prior >= signal_threshold).any()
-        was_below = (prior <= -signal_threshold).any()
+        # 2026-10-31修正重疊bug：上面給confirm_bars<=1用的prior（lookback_
+        # bars天、不含今天）跟這裡的last_n（confirm_bars天、含今天）在
+        # lookback_bars<=confirm_bars時會重疊（正式config兩者都是3，完全
+        # 重疊）——「曾經站上門檻(was_above)」跟「連續N根都已折返站穩
+        # (confirmed_below)」用的是同一批K棒，同一根不可能同時>=門檻又
+        # <門檻，bear_foldback/bull_foldback數學上永遠不可能成立（已實測
+        # 確認，不是機率很低）。改成touch視窗取在confirm視窗「正前方」
+        # 的lookback_bars根，跟confirm視窗完全不重疊，不管兩個設定值的
+        # 相對大小都成立。
+        touch_window = df["CCI"].iloc[-(confirm_bars + cfg["lookback_bars"]):-confirm_bars]
+        was_above = (touch_window >= signal_threshold).any()
+        was_below = (touch_window <= -signal_threshold).any()
         last_n = df["CCI"].tail(confirm_bars)
         confirmed_below = len(last_n) == confirm_bars and (last_n < signal_threshold).all()
         confirmed_above = len(last_n) == confirm_bars and (last_n > -signal_threshold).all()
