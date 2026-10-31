@@ -1489,6 +1489,33 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
         else:
             conclusion = "觀望"
 
+    # ---- 2026-10-31新增：空頭環境假反彈防護（見sop_rules.yaml watch_rules.
+    # bear_regime_fake_rally_guard區塊註解）。能走到這裡conclusion仍是
+    # 買進/加碼，代表股價其實還站在生死線之上（否則key_ma_down_veto已經
+    # 先判賣出減碼），防的是「均線本身還沒轉向、站上去的這段隨時可能被
+    # 拉回去」的假反彈，不是「反彈測試均線被打回」這種還沒做偵測的進階
+    # 型態。----
+    bear_guard_cfg = watch_cfg.get("bear_regime_fake_rally_guard", {})
+    if bear_guard_cfg.get("enabled", True) and key_slope_down and conclusion in ("買進", "加碼"):
+        has_left_side_support = ma120_second_leg or platform_second_leg_level is not None
+        held_above_open = pd.notna(latest.get("今開")) and latest["close"] >= latest["今開"]
+        if has_left_side_support and held_above_open:
+            if conclusion == "加碼":
+                conclusion = "買進"
+                caveats.append(
+                    "生死線仍下彎，但左側平台/半年線打出兩次腳未破且今日收盤站穩今開，"
+                    "依但丁老師規則先以小量試單（5-10%基本部位）處理，不升級為加碼"
+                )
+        else:
+            conclusion = "觀望"
+            caveats.append(
+                "生死線仍下彎壓制，依但丁老師規則視為破波段假反彈/誘多陷阱，"
+                "嚴禁波段重押或順勢加碼（若左側平台/半年線有兩次腳未破的底部支撐"
+                "且今日站穩今開才考慮小量試單）"
+            )
+            caveats.append("若已持有多單，逢弱勢反彈建議執行減碼/買保險，暫不追高")
+            caveats.append("均線本身仍下彎尚未轉向，若股價撐不住再度跌破生死線，可視為順勢加碼空點的訊號")
+
     # ---- 乖離過大：不論多空方向，嚴禁在此追高摸底，買訊一律降級觀望 ----
     if extreme_deviation and watch_cfg.get("extreme_deviation_downgrade", True) and conclusion in ("買進", "加碼"):
         caveats.append(f"雖符合買進/加碼條件，但乖離過大，先降級為觀望，等乖離收斂再說（原結論：{conclusion}）")
