@@ -176,12 +176,18 @@ def test_support_without_holding_open_still_downgrades_to_watch():
     print("✅ 有左側支撐但沒站穩今開：仍降級為觀望（同日確認鍵生效）")
 
 
-def test_platform_second_leg_also_counts_as_support():
-    df = _make_bear_slope_but_above_key_df(today_above_open=True)
+def test_platform_second_leg_alone_no_longer_counts_as_support_on_daily():
+    """2026-10-31再次收緊：另外用test_washout_recovery_platform_second_
+    leg_backtest.py測過「夾起單+廣義版兩次腳未破(platform_second_leg_
+    level)」，5/10日報酬勝率都比無條件基準差，沒有證據支持——日線這裡
+    只認ma120_second_leg（已驗證的半年線版），platform_second_leg_level
+    單獨出現（沒有ma120_second_leg）不該再被當成支撐，即使夾起單也成立。"""
+    df = _make_bear_slope_but_above_key_df(today_above_open=True, inject_washout=True)
     with _neutralize_other_steps("買進", platform_second_leg_level=63.5):
         v = sd.evaluate_timeframe(df, "日")
-    assert v.conclusion == "買進", f"platform_second_leg_level有值也該算有支撐，實際={v.conclusion}"
-    print("✅ platform_second_leg_level有值（廣義版兩次腳未破）也算有左側支撐")
+    assert v.conclusion == "觀望", \
+        f"日線只有platform_second_leg_level、沒有ma120_second_leg時，不該放行小量試單，實際={v.conclusion}"
+    print("✅ 日線：只有廣義版兩次腳未破(platform_second_leg_level)、沒有ma120_second_leg時，不再算有支撐")
 
 
 def test_disabled_flag_skips_guard():
@@ -217,7 +223,7 @@ if __name__ == "__main__":
     test_second_leg_without_washout_no_longer_exempts_on_daily()
     test_support_and_held_open_caps_add_to_buy()
     test_support_without_holding_open_still_downgrades_to_watch()
-    test_platform_second_leg_also_counts_as_support()
+    test_platform_second_leg_alone_no_longer_counts_as_support_on_daily()
     test_disabled_flag_skips_guard()
     test_guard_does_not_touch_existing_sell_conclusion()
     print()

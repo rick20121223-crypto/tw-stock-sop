@@ -1531,20 +1531,25 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     # 型態。----
     bear_guard_cfg = watch_cfg.get("bear_regime_fake_rally_guard", {})
     if bear_guard_cfg.get("enabled", True) and key_slope_down and conclusion in ("買進", "加碼"):
-        has_second_leg_support = ma120_second_leg or platform_second_leg_level is not None
         # 2026-10-31補強：日線的話，光有「兩次腳未破」不夠——backtest顯示
         # 單獨使用任一條件都沒有優於無條件基準的證據，只有「夾起單+兩次
         # 腳未破」同時成立才有效（見indicators.washout_recovery_second_leg
         # 區塊註解），所以日線這裡也要求夾起單同時成立才放行小量試單。
-        # 週/60分/5分目前沒有對應的夾起單backtest，維持原本只看支撐訊號
-        # 的寬鬆條件，不隨日線一起收緊。
+        # 2026-10-31再次收緊：日線只認ma120_second_leg（半年線版，已驗證
+        # 夾起單+它同時成立時10/20日報酬勝率都優於基準），不含
+        # platform_second_leg_level（廣義版）——另外用test_washout_
+        # recovery_platform_second_leg_backtest.py測過「夾起單+廣義版兩
+        # 次腳未破」，5/10日報酬勝率都比基準差，沒有證據支持，不要混進
+        # 來稀釋掉已驗證的訊號品質。週/60分/5分目前沒有對應的夾起單
+        # backtest，維持原本只看支撐訊號（含廣義版）的寬鬆條件，不隨日線
+        # 一起收緊。
         if tf == "日":
             washout_lookback = RULES["indicators"].get(
                 "washout_recovery_second_leg", {}).get("lookback_bars", 3)
-            has_left_side_support = has_second_leg_support and _detect_washout_recovery(
+            has_left_side_support = ma120_second_leg and _detect_washout_recovery(
                 df, tf, latest, washout_lookback)
         else:
-            has_left_side_support = has_second_leg_support
+            has_left_side_support = ma120_second_leg or platform_second_leg_level is not None
         held_above_open = pd.notna(latest.get("今開")) and latest["close"] >= latest["今開"]
         if has_left_side_support and held_above_open:
             if conclusion == "加碼":
