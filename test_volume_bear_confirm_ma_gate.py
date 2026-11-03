@@ -84,7 +84,12 @@ def evaluate_timeframe_modified(df: pd.DataFrame, timeframe_label: str) -> Verdi
     fast_slope_up = fast_slope == "上揚"
     fast_slope_down = fast_slope == "下彎"
 
-    w_bottom_neckline = sd._detect_w_bottom(df, fast_slope_up, macd_bias, reasons)
+    # 2026-10-13起_detect_w_bottom()多了kd365_bullish參數(見sop_decision.
+    # evaluate_timeframe本尊同一行的計算方式)，這支腳本原本沒跟上，呼叫
+    # 會直接TypeError——補上跟正式函式完全一致的算法。
+    kd365_bullish = tf != "週" and sd._kd365_crossed_up_recently(
+        df, RULES["indicators"]["kd365"]["w_bottom_fresh_cross_window"])
+    w_bottom_neckline = sd._detect_w_bottom(df, fast_slope_up, macd_bias, kd365_bullish, reasons)
     m_top_neckline = sd._detect_m_top(df, fast_slope_down, macd_bias, reasons)
     triangle = sd._detect_triangle_consolidation(df, tf, reasons, caveats)
     triangle_force_watch = triangle["active"] and not triangle["volume_confirmed"]
