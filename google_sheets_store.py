@@ -9,8 +9,8 @@
 - `GOOGLE_SHEETS_SPREADSHEET_ID`：試算表ID
 
 `positions`維持derived（不開獨立工作表）——`LedgerStore.list_positions()`
-這個共用方法在ABC基底類別裡已經做好，這裡只開4個工作表：accounts/
-orders/fills/daily_equity。
+這個共用方法在ABC基底類別裡已經做好，這裡開5個工作表：accounts/
+orders/fills/daily_equity/corporate_actions。
 
 `gspread`/`google-auth`只在真的要連線（沒有注入假client）時才會
 import——開發機沒裝這兩個套件、只用本機CSV時，這個模組本身仍然可以被
@@ -30,6 +30,7 @@ from uuid import uuid4
 
 from ledger_store import (
     _ACCOUNT_FIELDS,
+    _CORPORATE_ACTION_FIELDS,
     _DAILY_EQUITY_FIELDS,
     _FILL_FIELDS,
     _ORDER_FIELDS,
@@ -37,16 +38,18 @@ from ledger_store import (
     LedgerStore,
     Order,
     _account_to_row,
+    _corporate_action_to_row,
     _daily_equity_to_row,
     _fill_to_row,
     _order_to_row,
     _row_to_account,
+    _row_to_corporate_action,
     _row_to_daily_equity,
     _row_to_fill,
     _row_to_order,
     get_secret,
 )
-from performance import DailyEquity, Fill
+from performance import CorporateAction, DailyEquity, Fill
 
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -347,3 +350,24 @@ class GoogleSheetsLedgerStore(LedgerStore):
             LedgerWriteError, "新增每日淨值",
         )
         self._invalidate("daily_equity")
+
+    # corporate_actions ---------------------------------------------------
+    def list_corporate_actions(self, account_id: Optional[str] = None) -> List[CorporateAction]:
+        actions = [_row_to_corporate_action(r)
+                   for r in self._read_rows("corporate_actions", _CORPORATE_ACTION_FIELDS)]
+        if account_id is not None:
+            actions = [a for a in actions if a.account_id == account_id]
+        return actions
+
+    def add_corporate_action(self, action: CorporateAction) -> str:
+        if not action.id:
+            action.id = str(uuid4())
+        action.created_at = action.created_at or datetime.now()
+        worksheet = self._worksheet("corporate_actions", _CORPORATE_ACTION_FIELDS)
+        row = _corporate_action_to_row(action)
+        self._retry(
+            lambda: worksheet.append_row(_to_sheet_row(row, _CORPORATE_ACTION_FIELDS), value_input_option="RAW"),
+            LedgerWriteError, "新增除權息事件",
+        )
+        self._invalidate("corporate_actions")
+        return action.id

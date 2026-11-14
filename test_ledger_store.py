@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ledger_store import Account, CSVLedgerStore, Order, get_ledger_store
-from performance import DailyEquity, Fill
+from performance import CorporateAction, DailyEquity, Fill
 
 
 class TestCSVLedgerStore(unittest.TestCase):
@@ -38,6 +38,21 @@ class TestCSVLedgerStore(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.add_account(self._account())
 
+    def test_go_live_date_defaults_to_created_date_when_not_set(self):
+        account = Account(account_id="v2", label="測試", created_date=date(2026, 11, 14))
+        self.assertEqual(account.go_live_date, date(2026, 11, 14))
+
+    def test_go_live_date_can_differ_from_created_date(self):
+        account = Account(account_id="v3", label="測試", created_date=date(2026, 11, 1),
+                           go_live_date=date(2026, 11, 14))
+        self.assertEqual(account.go_live_date, date(2026, 11, 14))
+        self.assertEqual(account.created_date, date(2026, 11, 1))
+
+    def test_go_live_date_roundtrips_through_csv(self):
+        self.store.add_account(self._account())
+        [account] = self.store.list_accounts()
+        self.assertEqual(account.go_live_date, date(2026, 11, 14))
+
     def _order(self, account_id="v1", code="2330", side="買"):
         return Order(account_id=account_id, code=code, side=side, source="system",
                      signal_date=date(2026, 11, 10), entry_reason="買進",
@@ -63,6 +78,13 @@ class TestCSVLedgerStore(unittest.TestCase):
         orders = self.store.list_orders()
         self.assertEqual(orders[0].priority_rank, 2)
         self.assertEqual(orders[0].priority_reason, "20日均成交值排名第2，空位足夠配置")
+
+    def test_order_universe_version_roundtrips(self):
+        order = self._order()
+        order.universe_version = "v1-固定清單-核心持股"
+        self.store.add_order(order)
+        orders = self.store.list_orders()
+        self.assertEqual(orders[0].universe_version, "v1-固定清單-核心持股")
 
     def test_list_orders_filtered_by_account(self):
         self.store.add_order(self._order(account_id="v1"))
@@ -92,6 +114,13 @@ class TestCSVLedgerStore(unittest.TestCase):
         self.assertEqual(fills[0].price, 100.0)
         self.assertEqual(fills[0].planned_stop_loss, 95.0)
 
+    def test_fill_universe_version_roundtrips(self):
+        fill = self._fill()
+        fill.universe_version = "v1-固定清單-核心持股"
+        self.store.add_fill(fill)
+        fills = self.store.list_fills()
+        self.assertEqual(fills[0].universe_version, "v1-固定清單-核心持股")
+
     def test_list_positions_derived_from_fills(self):
         self.store.add_fill(self._fill(side="買", shares=1000))
         self.store.add_fill(self._fill(side="賣", shares=400))
@@ -116,6 +145,32 @@ class TestCSVLedgerStore(unittest.TestCase):
         records = self.store.list_daily_equity()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].total_equity, 1_020_000.0)
+
+    def _corporate_action(self, account_id="v1", code="2330"):
+        return CorporateAction(account_id=account_id, code=code, ex_date=date(2026, 11, 15),
+                                cash_per_share=2.0, stock_dividend_ratio=0.1)
+
+    def test_add_and_list_corporate_actions(self):
+        action_id = self.store.add_corporate_action(self._corporate_action())
+        actions = self.store.list_corporate_actions()
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].id, action_id)
+        self.assertEqual(actions[0].ex_date, date(2026, 11, 15))
+        self.assertEqual(actions[0].cash_per_share, 2.0)
+        self.assertEqual(actions[0].stock_dividend_ratio, 0.1)
+        self.assertIsNotNone(actions[0].created_at)
+
+    def test_list_corporate_actions_filtered_by_account(self):
+        self.store.add_corporate_action(self._corporate_action(account_id="v1"))
+        self.store.add_corporate_action(self._corporate_action(account_id="v2"))
+        self.assertEqual(len(self.store.list_corporate_actions()), 2)
+        self.assertEqual(len(self.store.list_corporate_actions(account_id="v1")), 1)
+
+    def test_list_positions_applies_registered_corporate_actions(self):
+        self.store.add_fill(self._fill(side="買", shares=1000))
+        self.store.add_corporate_action(self._corporate_action())
+        [pos] = self.store.list_positions()
+        self.assertEqual(pos.shares, 1100)
 
 
 class TestGetLedgerStore(unittest.TestCase):

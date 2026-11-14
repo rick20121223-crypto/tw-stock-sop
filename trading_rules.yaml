@@ -2,6 +2,17 @@
 # 風險偏好相關的參數——單檔部位上限/持股檔數上限/單筆最大虧損——放在
 # ledger_store.Account，不在這裡）。
 
+stock_pool:
+  type: fixed_list           # fixed_list | index_constituents | liquidity_topn
+  version_tag: "v1-固定清單-核心持股"  # 每筆Order/Fill都會記錄這個字串（見ledger_store.Order/performance.Fill的universe_version欄位）
+  fixed_list:
+    source: "stock_core.STOCK_NAME_MAP"
+  index_constituents:        # type=index_constituents時才讀這塊
+    index_code: "0050"
+    refresh_frequency: "quarterly"
+  liquidity_topn:            # type=liquidity_topn時才讀這塊
+    top_n: 100
+
 liquidity:
   min_avg_trade_value_20d: 30000000   # 20日均成交值門檻（新台幣），低於此排除
 

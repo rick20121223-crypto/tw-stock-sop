@@ -50,7 +50,7 @@ if accounts:
                 "初始本金": a.initial_capital, "單筆部位上限": f"{a.max_position_pct:.0%}",
                 "單筆最大虧損": f"{a.max_loss_pct:.1%}",
                 "持股檔數上限": a.max_holdings_count, "建立日期": a.created_date,
-                "啟用中": a.is_active,
+                "上線日": a.go_live_date, "啟用中": a.is_active,
             }
             for a in accounts
         ]),
@@ -73,6 +73,9 @@ with st.expander("➕ 新增帳戶", expanded=not accounts):
         with col3:
             new_holding_period = st.radio("持有週期類型", ["短線", "波段"], horizontal=True)
             new_max_loss_pct = st.slider("單筆最大虧損（占目前帳戶淨值）", 0.001, 0.10, 0.01, format="%.3f")
+            new_go_live_date = st.date_input(
+                "上線日（績效頁以此起算6個月觀察期，預設=今天）", value=date.today(),
+            )
         if st.form_submit_button("新增帳戶"):
             if not new_account_id or not new_label:
                 st.error("請填帳戶ID與名稱")
@@ -83,7 +86,7 @@ with st.expander("➕ 新增帳戶", expanded=not accounts):
                         rule_version_tag=new_rule_tag, initial_capital=new_capital,
                         max_position_pct=new_max_pct, max_holdings_count=int(new_max_holdings),
                         max_loss_pct=new_max_loss_pct, holding_period_type=new_holding_period,
-                        created_date=date.today(),
+                        created_date=date.today(), go_live_date=new_go_live_date,
                     ))
                     st.success("已新增帳戶")
                     st.rerun()
@@ -198,7 +201,7 @@ with tab_fills:
 
             if f_price > 0 and f_shares > 0:
                 preview_fee = calc_fee(f_price, f_shares)
-                preview_tax = calc_sell_tax(f_price, f_shares, f_is_etf, f_is_day_trade) if f_side == "賣" else 0.0
+                preview_tax = calc_sell_tax(f_price, f_shares, f_is_etf, f_is_day_trade, trade_date=f_fill_date) if f_side == "賣" else 0.0
                 st.caption(f"預覽：手續費 {preview_fee:,.0f} 元"
                            + (f"、證交稅 {preview_tax:,.0f} 元" if f_side == "賣" else ""))
 
@@ -207,7 +210,7 @@ with tab_fills:
                     st.error("請填代號、成交價、成交股數")
                 else:
                     fee = calc_fee(f_price, f_shares)
-                    tax = calc_sell_tax(f_price, f_shares, f_is_etf, f_is_day_trade) if f_side == "賣" else 0.0
+                    tax = calc_sell_tax(f_price, f_shares, f_is_etf, f_is_day_trade, trade_date=f_fill_date) if f_side == "賣" else 0.0
                     store.add_fill(Fill(
                         account_id=f_account, code=f_code.strip(), side=f_side, price=f_price,
                         shares=int(f_shares), fill_date=f_fill_date, fee=fee, tax=tax,

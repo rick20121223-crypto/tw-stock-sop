@@ -1,24 +1,29 @@
 """
 績效統計 — 讀取「交易日誌」的成交(fills)紀錄，用performance.py配對成
 完整交易，呈現勝率/盈虧比/期望值/R倍數/權益曲線/最大回撤/持有天數/與
-0050對照等統計。支援多帳戶並排比較，可切換只看system單/manual單/全部。
+0050對照等統計。支援多帳戶並排比較，可切換只看system單/manual單/全部，
+預設只看system單——放行實單標準不受這個篩選影響，一律固定只用system單
+計算，避免練習用的manual單意外影響這個高風險結論。
 
-限制：不處理除權息調整；只處理現股多頭（先買後賣），不支援融資融券/
-放空；漲跌停判斷方式見fill_rules.py的簡化說明；與0050對照的報酬率是用
-「總進場成本」當分母的近似值，不是嚴謹的時間加權報酬率(TWR)。
+限制：已平倉交易本身的損益計算不處理除權息調整（持有中的未平倉部位會
+套用股票股利調整，見ledger_store.list_positions）；只處理現股多頭（先
+買後賣），不支援融資融券/放空；漲跌停判斷方式見fill_rules.py的簡化說明；
+與0050對照改用含息（總報酬）序列，報酬率仍是用「總進場成本」當分母的
+近似值，不是嚴謹的時間加權報酬率(TWR)。
 
 執行方式：streamlit run streamlit_app.py
 """
 
-from datetime import timedelta
+import calendar
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from backtest.data_fetch import fetch_total_return_daily
 from ledger_store import get_ledger_store, get_secret, require_pin
 from performance import check_live_trading_gate, compare_to_benchmark, compute_stats, match_fifo
-from stock_core import get_stock_data
 
 st.set_page_config(page_title="績效統計", layout="wide", page_icon="📊")
 
@@ -27,10 +32,10 @@ if not require_pin():
 
 st.title("📊 績效統計")
 st.caption(
-    "依「交易日誌」的成交紀錄，用FIFO配對成完整交易後計算績效。不處理"
-    "除權息調整；只處理現股多頭（先買後賣），不支援融資融券/放空；與"
-    "0050對照的報酬率是用「總進場成本」當分母的近似值，不是嚴謹的時間"
-    "加權報酬率(TWR)。"
+    "依「交易日誌」的成交紀錄，用FIFO配對成完整交易後計算績效（已平倉損益"
+    "本身不處理除權息調整）；只處理現股多頭（先買後賣），不支援融資融券/"
+    "放空；與0050對照已改用含息（總報酬）序列，報酬率仍是用「總進場成本」"
+    "當分母的近似值，不是嚴謹的時間加權報酬率(TWR)。"
 )
 
 with st.sidebar:
@@ -55,7 +60,7 @@ selected_ids = st.multiselect(
     default=list(account_by_id.keys()),
     format_func=lambda i: f"{i}（{account_by_id[i].label}）",
 )
-source_choice = st.radio("來源篩選", ["全部", "只看system單", "只看manual單"], horizontal=True)
+source_choice = st.radio("來源篩選", ["全部", "只看system單", "只看manual單"], index=1, horizontal=True)
 source_filter = {"全部": None, "只看system單": "system", "只看manual單": "manual"}[source_choice]
 years_back = st.slider("與0050對照：FinMind回溯年數", 1, 5, 2)
 
@@ -64,18 +69,33 @@ if not selected_ids:
     st.stop()
 
 
+def _add_months(d: date, months: int) -> date:
+    """單純的月份加法，不處理負數月份；日超出目標月份天數時自動取該月
+    最後一天（例如1/31+6個月是7/31，8/31+6個月會是2/28或2/29）。"""
+    total_month = d.month - 1 + months
+    year = d.year + total_month // 12
+    month = total_month % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
 def _render_account(account_id: str) -> None:
     account = account_by_id[account_id]
     st.subheader(f"{account_id}（{account.label}）")
+    if account.go_live_date:
+        decision_date = _add_months(account.go_live_date, 6)
+        st.caption(f"上線日：{account.go_live_date}　決策日（上線日+6個月）：{decision_date}")
 
     fills = store.list_fills(account_id=account_id)
     if not fills:
         st.info("這個帳戶目前沒有任何成交紀錄。")
         return
 
-    closed = match_fifo(fills)
-    if source_filter is not None:
-        closed = [t for t in closed if t.source == source_filter]
+    closed_all = match_fifo(fills)
+    if account.go_live_date:
+        closed_all = [t for t in closed_all if t.entry_date >= account.go_live_date]
+    closed = closed_all if source_filter is None else [t for t in closed_all if t.source == source_filter]
+    closed_system = [t for t in closed_all if t.source == "system"]
 
     if not closed:
         st.info("這個帳戶（在目前的來源篩選下）沒有已平倉的交易。")
@@ -106,32 +126,38 @@ def _render_account(account_id: str) -> None:
             use_container_width=True,
         )
 
-    st.markdown("**與 0050 買進持有對照**")
-    start = min(t.entry_date for t in closed)
-    end = max(t.exit_date for t in closed)
+    st.markdown("**與 0050 買進持有對照（含息）**")
+    start = min(t.entry_date for t in closed_all)
+    end = max(t.exit_date for t in closed_all)
     fetch_start = start - timedelta(days=365 * years_back)
-    price_df = get_stock_data("0050", "TW", fetch_start.isoformat(), end.isoformat(), api_token)
+    price_df = fetch_total_return_daily("0050", "TW", fetch_start.isoformat(), end.isoformat(), api_token)
     if price_df.empty:
         st.warning("抓不到0050歷史價格，請確認FinMind Token設定正確。")
         comparison = {"portfolio_return": None, "benchmark_return": None}
+        gate_comparison = {"portfolio_return": None, "benchmark_return": None}
     else:
         benchmark_prices = list(zip(pd.to_datetime(price_df["date"]).dt.date, price_df["close"]))
         comparison = compare_to_benchmark(closed, benchmark_prices)
+        gate_comparison = compare_to_benchmark(closed_system, benchmark_prices)
         if comparison["portfolio_return"] is not None:
             col_b1, col_b2 = st.columns(2)
             col_b1.metric("帳戶報酬率（近似值）", f"{comparison['portfolio_return']:.1%}")
-            col_b2.metric("0050同期買進持有報酬率", f"{comparison['benchmark_return']:.1%}")
+            col_b2.metric("0050同期買進持有報酬率（含息）", f"{comparison['benchmark_return']:.1%}")
 
-    st.markdown("**放行實單標準**")
+    st.markdown("**放行實單標準**（固定只用system單計算，不受上方來源篩選影響）")
+    if not closed_system:
+        st.info("這個帳戶目前沒有system單的已平倉交易，無法計算放行標準。")
+        return
+    gate_stats = compute_stats(closed_system)
     gate = check_live_trading_gate(
-        stats, base_equity=account.initial_capital,
-        portfolio_return=comparison["portfolio_return"],
-        benchmark_return=comparison["benchmark_return"],
+        gate_stats, base_equity=account.initial_capital,
+        portfolio_return=gate_comparison["portfolio_return"],
+        benchmark_return=gate_comparison["benchmark_return"],
     )
-    if gate.passed:
-        st.success("✅ 符合放行標準")
-    else:
-        st.warning("❌ 尚未符合放行標準")
+    status_display = {"達標": "✅ 達標", "未達標": "❌ 未達標", "資料不足": "ℹ️ 資料不足"}
+    (st.success if gate.status == "達標" else st.info if gate.status == "資料不足" else st.warning)(
+        status_display[gate.status]
+    )
     col_g1, col_g2, col_g3 = st.columns(3)
     col_g1.metric(
         "扣成本後優於0050",
@@ -143,8 +169,8 @@ def _render_account(account_id: str) -> None:
         help="門檻：≤15%",
     )
     col_g3.metric(
-        "交易筆數",
-        f"{stats.total_trades}",
+        "交易筆數（system單）",
+        f"{gate_stats.total_trades}",
         help="門檻：≥30筆",
     )
     st.caption(f"前向結果與回測是否相近：{gate.forward_vs_backtest_note}")

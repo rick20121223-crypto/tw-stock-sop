@@ -5,12 +5,12 @@
 改用私有GitHub repo，只要新增一個同樣實作LedgerStore介面的類別，
 pages/5_交易日誌.py、pages/6_績效統計.py完全不用改。
 
-accounts/orders/fills/daily_equity各自是獨立讀寫的表；positions不是
-獨立儲存的表，是呼叫performance.compute_positions()對fills算出來的
-派生快照（list_positions()只是方便呼叫的包裝，不接受直接寫入）。
-daily_equity這個月不會自動寫入（那是第3個月自動引擎的工作），
-add_daily_equity()給你手動呼叫performance.compute_daily_equity()算出
-一列後存起來驗證流程。
+accounts/orders/fills/daily_equity/corporate_actions各自是獨立讀寫的表；
+positions不是獨立儲存的表，是呼叫performance.compute_positions()對fills
+（套用corporate_actions的股票股利調整）算出來的派生快照（list_positions()
+只是方便呼叫的包裝，不接受直接寫入）。daily_equity/corporate_actions這個
+月不會自動寫入（那是第3個月自動引擎的工作），add_daily_equity()/
+add_corporate_action()給你手動呼叫驗證流程。
 """
 
 import csv
@@ -23,7 +23,7 @@ from uuid import uuid4
 
 import streamlit as st
 
-from performance import DailyEquity, Fill, Position, compute_positions
+from performance import CorporateAction, DailyEquity, Fill, Position, compute_positions
 
 DATA_DIR = Path(__file__).parent / "data" / "paper_trading"
 
@@ -39,7 +39,12 @@ class Account:
     max_loss_pct: float = 0.01  # 單筆最大虧損，占「目前帳戶淨值」的比例，position_sizing.py用來反推股數
     holding_period_type: str = "短線"  # "短線" 或 "波段"
     created_date: Optional[date] = None
+    go_live_date: Optional[date] = None  # 正式開始算6個月放行觀察期的起點；沒填就等於created_date（見__post_init__）
     is_active: bool = True
+
+    def __post_init__(self):
+        if self.go_live_date is None:
+            self.go_live_date = self.created_date
 
 
 @dataclass
@@ -57,6 +62,7 @@ class Order:
     status: str = "pending"  # pending/filled/deferred/cancelled
     priority_rank: Optional[int] = None  # 同日訊號數超過空位/現金時，position_sizing.prioritize_candidates()排出的名次
     priority_reason: str = ""  # 排序依據的文字說明，供事後稽核「為什麼這張單被排擠掉」
+    universe_version: str = ""  # 產生這張委託當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）
     id: str = ""
     created_at: Optional[datetime] = None
 
@@ -112,6 +118,7 @@ _ACCOUNT_FIELDS = [f.name for f in fields(Account)]
 def _account_to_row(a: Account) -> dict:
     row = asdict(a)
     row["created_date"] = a.created_date.isoformat() if a.created_date else ""
+    row["go_live_date"] = a.go_live_date.isoformat() if a.go_live_date else ""
     return row
 
 
@@ -126,6 +133,7 @@ def _row_to_account(row: dict) -> Account:
         max_loss_pct=float(row["max_loss_pct"]) if row.get("max_loss_pct") else 0.01,
         holding_period_type=row.get("holding_period_type") or "短線",
         created_date=date.fromisoformat(row["created_date"]) if row.get("created_date") else None,
+        go_live_date=date.fromisoformat(row["go_live_date"]) if row.get("go_live_date") else None,
         is_active=row["is_active"] in ("True", "true", "1"),
     )
 
@@ -163,6 +171,7 @@ def _row_to_order(row: dict) -> Order:
         status=row.get("status", "pending"),
         priority_rank=int(row["priority_rank"]) if row.get("priority_rank") else None,
         priority_reason=row.get("priority_reason", ""),
+        universe_version=row.get("universe_version", ""),
         created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None,
     )
 
@@ -196,6 +205,7 @@ def _row_to_fill(row: dict) -> Fill:
         source=row.get("source", "system"),
         planned_stop_loss=float(row["planned_stop_loss"]) if row.get("planned_stop_loss") else None,
         exit_reason=row.get("exit_reason", ""),
+        universe_version=row.get("universe_version", ""),
         order_id=row.get("order_id", ""),
         created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None,
     )
@@ -221,6 +231,33 @@ def _row_to_daily_equity(row: dict) -> DailyEquity:
         positions_value=float(row["positions_value"]),
         total_equity=float(row["total_equity"]),
         cumulative_pnl=float(row["cumulative_pnl"]),
+    )
+
+
+# ------------------------------------------------------------------
+# corporate_actions（CorporateAction dataclass定義在performance.py，這裡
+# 只負責CSV序列化，跟fills/daily_equity同一套模式）
+# ------------------------------------------------------------------
+_CORPORATE_ACTION_FIELDS = [f.name for f in fields(CorporateAction)]
+
+
+def _corporate_action_to_row(a: CorporateAction) -> dict:
+    row = asdict(a)
+    row["ex_date"] = a.ex_date.isoformat()
+    row["created_at"] = a.created_at.isoformat() if a.created_at else ""
+    return row
+
+
+def _row_to_corporate_action(row: dict) -> CorporateAction:
+    return CorporateAction(
+        id=row["id"],
+        account_id=row["account_id"],
+        code=row["code"],
+        ex_date=date.fromisoformat(row["ex_date"]),
+        cash_per_share=float(row["cash_per_share"]) if row.get("cash_per_share") else 0.0,
+        stock_dividend_ratio=float(row["stock_dividend_ratio"]) if row.get("stock_dividend_ratio") else 0.0,
+        source=row.get("source", "system"),
+        created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None,
     )
 
 
@@ -252,9 +289,19 @@ class LedgerStore(ABC):
     @abstractmethod
     def add_daily_equity(self, record: DailyEquity) -> None: ...
 
+    @abstractmethod
+    def list_corporate_actions(self, account_id: Optional[str] = None) -> List[CorporateAction]: ...
+
+    @abstractmethod
+    def add_corporate_action(self, action: CorporateAction) -> str: ...
+
     def list_positions(self, account_id: Optional[str] = None) -> List[Position]:
-        """派生快照，不是獨立儲存——直接對fills跑compute_positions()。"""
-        return compute_positions(self.list_fills(account_id=account_id))
+        """派生快照，不是獨立儲存——直接對fills跑compute_positions()，順便
+        套用已登記的股票股利調整（corporate_actions）。"""
+        return compute_positions(
+            self.list_fills(account_id=account_id),
+            corporate_actions=self.list_corporate_actions(account_id=account_id),
+        )
 
 
 class CSVLedgerStore(LedgerStore):
@@ -264,6 +311,7 @@ class CSVLedgerStore(LedgerStore):
         self.orders_path = data_dir / "orders.csv"
         self.fills_path = data_dir / "fills.csv"
         self.daily_equity_path = data_dir / "daily_equity.csv"
+        self.corporate_actions_path = data_dir / "corporate_actions.csv"
 
     # accounts ------------------------------------------------------
     def list_accounts(self) -> List[Account]:
@@ -336,6 +384,23 @@ class CSVLedgerStore(LedgerStore):
         records.append(record)
         _write_csv(self.daily_equity_path, _DAILY_EQUITY_FIELDS,
                     [_daily_equity_to_row(r) for r in records])
+
+    # corporate_actions -------------------------------------------------
+    def list_corporate_actions(self, account_id: Optional[str] = None) -> List[CorporateAction]:
+        actions = [_row_to_corporate_action(r) for r in _read_csv(self.corporate_actions_path)]
+        if account_id is not None:
+            actions = [a for a in actions if a.account_id == account_id]
+        return actions
+
+    def add_corporate_action(self, action: CorporateAction) -> str:
+        actions = [_row_to_corporate_action(r) for r in _read_csv(self.corporate_actions_path)]
+        if not action.id:
+            action.id = str(uuid4())
+        action.created_at = action.created_at or datetime.now()
+        actions.append(action)
+        _write_csv(self.corporate_actions_path, _CORPORATE_ACTION_FIELDS,
+                    [_corporate_action_to_row(a) for a in actions])
+        return action.id
 
 
 def get_ledger_store() -> LedgerStore:

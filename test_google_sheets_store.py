@@ -3,7 +3,7 @@ from datetime import date
 from unittest.mock import patch
 
 from ledger_store import Account, Order
-from performance import DailyEquity, Fill
+from performance import CorporateAction, DailyEquity, Fill
 from google_sheets_store import (
     GoogleSheetsLedgerStore,
     LedgerReadError,
@@ -292,6 +292,39 @@ class TestDailyEquityCrud(_GoogleSheetsStoreTestCase):
         records = store.list_daily_equity()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].total_equity, 1_020_000.0)
+
+
+class TestCorporateActionsCrud(_GoogleSheetsStoreTestCase):
+    def _action(self, account_id="v1", code="2330"):
+        return CorporateAction(account_id=account_id, code=code, ex_date=date(2026, 11, 15),
+                                cash_per_share=2.0, stock_dividend_ratio=0.1)
+
+    def test_add_and_list_corporate_actions(self):
+        store = self._make_store()
+        action_id = store.add_corporate_action(self._action())
+        actions = store.list_corporate_actions()
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].id, action_id)
+        self.assertEqual(actions[0].ex_date, date(2026, 11, 15))
+        self.assertEqual(actions[0].cash_per_share, 2.0)
+        self.assertEqual(actions[0].stock_dividend_ratio, 0.1)
+
+    def test_list_corporate_actions_filtered_by_account(self):
+        store = self._make_store()
+        store.add_corporate_action(self._action(account_id="v1"))
+        store.add_corporate_action(self._action(account_id="v2"))
+        self.assertEqual(len(store.list_corporate_actions()), 2)
+        self.assertEqual(len(store.list_corporate_actions(account_id="v1")), 1)
+
+    def test_list_positions_applies_registered_corporate_actions(self):
+        """跟CSVLedgerStore一樣，list_positions()要自動套用corporate_actions
+        工作表裡登記的股票股利調整。"""
+        store = self._make_store()
+        store.add_fill(Fill(account_id="v1", code="2330", side="買", price=100.0, shares=1000,
+                             fill_date=date(2026, 11, 10), fee=142.0))
+        store.add_corporate_action(self._action())
+        [pos] = store.list_positions()
+        self.assertEqual(pos.shares, 1100)
 
 
 class TestReadCache(_GoogleSheetsStoreTestCase):

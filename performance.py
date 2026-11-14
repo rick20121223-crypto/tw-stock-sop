@@ -53,14 +53,20 @@ def calc_fee(price: float, shares: int, costs: Dict = COSTS) -> float:
 
 
 def calc_sell_tax(price: float, shares: int, is_etf: bool, is_day_trade: bool,
-                   costs: Dict = COSTS) -> float:
+                   costs: Dict = COSTS, trade_date: Optional[date] = None) -> float:
     """賣出時的證交稅，無條件捨去到整數元（同calc_fee的捨去方式）。
     判斷順序：is_etf優先（固定etf_rate，當沖也不減半）→ 否則看
-    is_day_trade（stock的現股當沖減半）→ 否則一般股票稅率。"""
+    is_day_trade且trade_date未超過day_trade_discount_expires（stock的現股
+    當沖減半，落日後退回一般稅率）→ 否則一般股票稅率。trade_date未提供時
+    預設today()（沿用呼叫當下的日期判斷減半優惠是否仍有效）。"""
     tax_cfg = costs["securities_tax"]
+    if trade_date is None:
+        trade_date = date.today()
+    expires = tax_cfg.get("day_trade_discount_expires")
+    day_trade_discount_active = not expires or trade_date <= date.fromisoformat(expires)
     if is_etf:
         rate = tax_cfg["etf_rate"]
-    elif is_day_trade:
+    elif is_day_trade and day_trade_discount_active:
         rate = tax_cfg["day_trade_rate"]
     else:
         rate = tax_cfg["stock_rate"]
@@ -81,6 +87,7 @@ class Fill:
     source: str = "system"  # "system" 或 "manual"
     planned_stop_loss: Optional[float] = None  # 從originating order複製過來，只有買方有意義，R倍數計算用
     exit_reason: str = ""
+    universe_version: str = ""  # 建立這筆成交當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）
     id: str = ""
     order_id: str = ""
     created_at: Optional[datetime] = None
@@ -114,6 +121,25 @@ class Position:
 
 
 @dataclass
+class CorporateAction:
+    """除權息事件（最低限度處理）。cash_per_share>0表示現金股利（每股配發
+    金額），stock_dividend_ratio>0表示股票股利（例如0.1表示每1股配發0.1股，
+    持有1000股的部位會變成1100股，總成本不變、每股成本等比例下降）。兩者
+    可以同時不為0（股票同時配發現金+股票股利）。這個月只定義資料結構+
+    純函式（見compute_positions的corporate_actions參數、
+    compute_pending_dividend_cash()），實際把現金寫進帳戶現金是第3個月
+    自動引擎的工作。"""
+    account_id: str
+    code: str
+    ex_date: date
+    cash_per_share: float = 0.0
+    stock_dividend_ratio: float = 0.0
+    source: str = "system"
+    id: str = ""
+    created_at: Optional[datetime] = None
+
+
+@dataclass
 class _Chunk:
     side: str
     trade: Fill
@@ -125,6 +151,11 @@ class _Chunk:
 class _Lot:
     entry_trade: Fill
     remaining_shares: int
+    cost_per_share: float = 0.0  # 0.0時(_walk_account_code建立時)視為尚未套用股票股利調整，用entry_trade.price
+
+    def __post_init__(self):
+        if not self.cost_per_share:
+            self.cost_per_share = self.entry_trade.price
 
 
 def _walk_account_code(ordered: List[Fill]) -> Tuple[List[List[_Chunk]], List[_Lot]]:
@@ -193,10 +224,26 @@ def match_fifo(fills: List[Fill]) -> List[ClosedTrade]:
     return closed
 
 
-def compute_positions(fills: List[Fill]) -> List[Position]:
+def compute_positions(fills: List[Fill],
+                       corporate_actions: Optional[List[CorporateAction]] = None) -> List[Position]:
     """算出目前未平倉的持倉快照（FIFO加權平均成本）。完全平倉或從未交易
     過的(account_id, code)不會出現在結果裡（shares=0的狀態不產生任何列，
-    不是列出來顯示0）。"""
+    不是列出來顯示0）。
+
+    corporate_actions給的話，股票股利（stock_dividend_ratio!=0）會套用在
+    「當時已經存在、且到現在還沒平倉」的lot上：依ex_date由舊到新依序
+    對每個符合的lot把remaining_shares乘上(1+ratio)、cost_per_share除以
+    (1+ratio)（總成本不變）。不影響match_fifo()的已實現損益——那邊用的
+    是買賣當下的實際成交價，是獨立的一條計算，不需要知道股票股利。
+    現金股利（cash_per_share）在這裡不處理，見compute_pending_dividend_cash()。
+    """
+    actions_by_key: Dict[Tuple[str, str], List[CorporateAction]] = {}
+    for a in (corporate_actions or []):
+        if a.stock_dividend_ratio:
+            actions_by_key.setdefault((a.account_id, a.code), []).append(a)
+    for acts in actions_by_key.values():
+        acts.sort(key=lambda a: a.ex_date)
+
     positions: List[Position] = []
     for (account_id, code), group in _group_by_account_code(fills).items():
         # 只排fill_date，刻意不加f.id當次要排序鍵：同一天兩筆成交（例如
@@ -210,12 +257,55 @@ def compute_positions(fills: List[Fill]) -> List[Position]:
             _, open_lots = _walk_account_code(ordered)
         except ValueError as e:
             raise ValueError(f"{account_id}/{code}: {e}")
+
+        for action in actions_by_key.get((account_id, code), []):
+            for lot in open_lots:
+                if lot.entry_trade.fill_date <= action.ex_date:
+                    ratio = action.stock_dividend_ratio
+                    lot.remaining_shares = round(lot.remaining_shares * (1 + ratio))
+                    lot.cost_per_share = lot.cost_per_share / (1 + ratio)
+
         total_shares = sum(l.remaining_shares for l in open_lots)
         if total_shares > 0:
-            avg_cost = sum(l.remaining_shares * l.entry_trade.price for l in open_lots) / total_shares
+            avg_cost = sum(l.remaining_shares * l.cost_per_share for l in open_lots) / total_shares
             positions.append(Position(account_id=account_id, code=code,
                                        shares=total_shares, avg_cost=avg_cost))
     return positions
+
+
+def compute_pending_dividend_cash(fills: List[Fill],
+                                   corporate_actions: List[CorporateAction]) -> List[Dict]:
+    """對每一筆corporate_actions裡cash_per_share>0的現金股利事件，算出
+    「除息日當天實際持有股數」（用除息日之前——不含當天——的成交去算
+    compute_positions()，同時套用更早的股票股利調整，確保股數基礎正確）
+    乘上cash_per_share，回傳待入帳清單。這個月只做這個純計算，不實際寫進
+    任何帳本——第3個月自動引擎跑到對應日期時，應該呼叫這個函式、把結果
+    存成一筆新的corporate_actions帳本紀錄（見ledger_store.py）。
+
+    回傳 [{"account_id", "code", "ex_date", "held_shares", "cash_amount"}, ...]，
+    held_shares為0的事件（事件當天沒有持股）不會出現在結果裡。
+    """
+    stock_actions = [a for a in corporate_actions if a.stock_dividend_ratio]
+    results: List[Dict] = []
+    for action in corporate_actions:
+        if not action.cash_per_share:
+            continue
+        fills_before = [f for f in fills
+                        if f.account_id == action.account_id and f.code == action.code
+                        and f.fill_date < action.ex_date]
+        prior_stock_actions = [a for a in stock_actions
+                                if a.account_id == action.account_id and a.code == action.code
+                                and a.ex_date < action.ex_date]
+        positions = compute_positions(fills_before, corporate_actions=prior_stock_actions)
+        held = next((p.shares for p in positions
+                     if p.account_id == action.account_id and p.code == action.code), 0)
+        if held > 0:
+            results.append({
+                "account_id": action.account_id, "code": action.code,
+                "ex_date": action.ex_date, "held_shares": held,
+                "cash_amount": held * action.cash_per_share,
+            })
+    return results
 
 
 def _finalize_round_trip(account_id: str, code: str, fills: List[_Chunk]) -> ClosedTrade:
@@ -428,6 +518,7 @@ def compute_daily_equity(account_id: str, initial_capital: float, cash: float,
 @dataclass
 class GateResult:
     passed: bool
+    status: str  # "達標"/"未達標"/"資料不足"——交易筆數未達下限時固定是"資料不足"，蓋過其他條件
     beats_benchmark: Optional[bool]  # None=還沒有足夠資料能比較
     max_drawdown_ok: bool
     max_drawdown_pct: Optional[float]  # None=base_equity無效，算不出百分比
@@ -460,8 +551,17 @@ def check_live_trading_gate(stats: PerformanceStats, base_equity: float,
     require_beat = gate_cfg.get("require_beat_benchmark", True)
     benchmark_ok = (beats_benchmark is True) if require_beat else True
 
+    passed = trade_count_ok and max_drawdown_ok and benchmark_ok
+    if not trade_count_ok:
+        status = "資料不足"
+    elif passed:
+        status = "達標"
+    else:
+        status = "未達標"
+
     return GateResult(
-        passed=trade_count_ok and max_drawdown_ok and benchmark_ok,
+        passed=passed,
+        status=status,
         beats_benchmark=beats_benchmark,
         max_drawdown_ok=max_drawdown_ok,
         max_drawdown_pct=max_drawdown_pct,

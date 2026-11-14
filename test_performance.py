@@ -4,6 +4,7 @@ from datetime import date
 
 from performance import (
     ClosedTrade,
+    CorporateAction,
     Fill,
     PerformanceStats,
     Position,
@@ -12,6 +13,7 @@ from performance import (
     check_live_trading_gate,
     compare_to_benchmark,
     compute_daily_equity,
+    compute_pending_dividend_cash,
     compute_positions,
     compute_stats,
     match_fifo,
@@ -85,8 +87,23 @@ class TestFees(unittest.TestCase):
         self.assertEqual(tax, math.floor(37 * 1000 * 0.003))
 
     def test_calc_sell_tax_stock_day_trade_is_halved(self):
-        tax = calc_sell_tax(price=38, shares=1000, is_etf=False, is_day_trade=True, costs=_costs())
+        tax = calc_sell_tax(price=38, shares=1000, is_etf=False, is_day_trade=True, costs=_costs(),
+                             trade_date=date(2027, 1, 1))
         self.assertEqual(tax, math.floor(38 * 1000 * 0.0015))
+
+    def test_calc_sell_tax_stock_day_trade_after_expiry_not_halved(self):
+        """超過day_trade_discount_expires後，現股當沖減半優惠自動失效，
+        退回一般股票稅率（不是day_trade_rate）。"""
+        tax = calc_sell_tax(price=38, shares=1000, is_etf=False, is_day_trade=True, costs=_costs(),
+                             trade_date=date(2028, 1, 1))
+        self.assertEqual(tax, math.floor(38 * 1000 * 0.003))
+
+    def test_calc_sell_tax_defaults_trade_date_to_today(self):
+        """沒傳trade_date時用today()判斷減半優惠是否仍有效——這裡只驗證
+        「不會因為沒傳就整個壞掉」，不特別驗證今天在落日日期前後哪一邊。"""
+        costs = _costs()
+        tax = calc_sell_tax(price=38, shares=1000, is_etf=False, is_day_trade=True, costs=costs)
+        self.assertIn(tax, (math.floor(38 * 1000 * 0.0015), math.floor(38 * 1000 * 0.003)))
 
     def test_calc_sell_tax_etf_not_day_trade(self):
         tax = calc_sell_tax(price=37, shares=1000, is_etf=True, is_day_trade=False, costs=_costs())
@@ -262,6 +279,70 @@ class TestComputePositions(unittest.TestCase):
     def test_no_fills_at_all_produces_no_rows(self):
         self.assertEqual(compute_positions([]), [])
 
+    def test_stock_dividend_increases_shares_and_lowers_cost_per_share(self):
+        """持有1000股、每股成本100，除息日配發股票股利ratio=0.1（每股配
+        發0.1股）後應變成1100股、每股成本約90.91（總成本100,000不變）。"""
+        costs = _costs()
+        buy = Fill(id="b12", account_id="v1", code="2330", side="買", price=100, shares=1000,
+                   fill_date=date(2026, 9, 1), fee=calc_fee(100, 1000, costs))
+        action = CorporateAction(account_id="v1", code="2330", ex_date=date(2026, 9, 15),
+                                  stock_dividend_ratio=0.1)
+        [pos] = compute_positions([buy], corporate_actions=[action])
+        self.assertEqual(pos.shares, 1100)
+        self.assertAlmostEqual(pos.avg_cost, 100_000 / 1100)
+
+    def test_stock_dividend_before_lot_existed_does_not_apply(self):
+        """除息日在這筆買進之前成立的股票股利，不該套用到之後才買進的
+        這批股數上（這批股數當時根本還沒持有，不該收到股利）。"""
+        costs = _costs()
+        buy = Fill(id="b13", account_id="v1", code="2330", side="買", price=100, shares=1000,
+                   fill_date=date(2026, 9, 20), fee=calc_fee(100, 1000, costs))
+        action = CorporateAction(account_id="v1", code="2330", ex_date=date(2026, 9, 15),
+                                  stock_dividend_ratio=0.1)
+        [pos] = compute_positions([buy], corporate_actions=[action])
+        self.assertEqual(pos.shares, 1000)
+        self.assertAlmostEqual(pos.avg_cost, 100.0)
+
+    def test_corporate_actions_none_keeps_old_behavior(self):
+        costs = _costs()
+        buy = Fill(id="b14", account_id="v1", code="2330", side="買", price=100, shares=1000,
+                   fill_date=date(2026, 9, 1), fee=calc_fee(100, 1000, costs))
+        [pos] = compute_positions([buy])
+        self.assertEqual(pos.shares, 1000)
+        self.assertAlmostEqual(pos.avg_cost, 100.0)
+
+
+class TestComputePendingDividendCash(unittest.TestCase):
+    def test_cash_dividend_credited_for_shares_held_before_ex_date(self):
+        costs = _costs()
+        buy = Fill(id="b15", account_id="v1", code="2330", side="買", price=100, shares=1000,
+                   fill_date=date(2026, 9, 1), fee=calc_fee(100, 1000, costs))
+        action = CorporateAction(account_id="v1", code="2330", ex_date=date(2026, 9, 15),
+                                  cash_per_share=2.0)
+        [credit] = compute_pending_dividend_cash([buy], [action])
+        self.assertEqual(credit["held_shares"], 1000)
+        self.assertAlmostEqual(credit["cash_amount"], 2000.0)
+
+    def test_shares_bought_after_ex_date_not_credited(self):
+        costs = _costs()
+        buy = Fill(id="b16", account_id="v1", code="2330", side="買", price=100, shares=1000,
+                   fill_date=date(2026, 9, 20), fee=calc_fee(100, 1000, costs))
+        action = CorporateAction(account_id="v1", code="2330", ex_date=date(2026, 9, 15),
+                                  cash_per_share=2.0)
+        self.assertEqual(compute_pending_dividend_cash([buy], [action]), [])
+
+    def test_shares_fully_sold_before_ex_date_not_credited(self):
+        costs = _costs()
+        buy = Fill(id="b17", account_id="v1", code="2330", side="買", price=100, shares=1000,
+                   fill_date=date(2026, 9, 1), fee=calc_fee(100, 1000, costs))
+        sell = Fill(id="s11", account_id="v1", code="2330", side="賣", price=110, shares=1000,
+                    fill_date=date(2026, 9, 10), fee=calc_fee(110, 1000, costs),
+                    tax=calc_sell_tax(110, 1000, is_etf=False, is_day_trade=False, costs=costs,
+                                       trade_date=date(2026, 9, 10)))
+        action = CorporateAction(account_id="v1", code="2330", ex_date=date(2026, 9, 15),
+                                  cash_per_share=2.0)
+        self.assertEqual(compute_pending_dividend_cash([buy, sell], [action]), [])
+
 
 class TestComputeStats(unittest.TestCase):
     def _closed_trade(self, net_pnl, r_multiple, exit_date, holding_days, source="system"):
@@ -388,6 +469,7 @@ class TestCheckLiveTradingGate(unittest.TestCase):
             rules=_gate_rules(),
         )
         self.assertTrue(result.passed)
+        self.assertEqual(result.status, "達標")
         self.assertTrue(result.trade_count_ok)
         self.assertTrue(result.max_drawdown_ok)
         self.assertAlmostEqual(result.max_drawdown_pct, 0.10)
@@ -400,8 +482,19 @@ class TestCheckLiveTradingGate(unittest.TestCase):
             rules=_gate_rules(),
         )
         self.assertFalse(result.passed)
+        self.assertEqual(result.status, "資料不足")
         self.assertFalse(result.trade_count_ok)
         self.assertTrue(result.max_drawdown_ok)
+
+    def test_trade_count_short_is_insufficient_data_even_if_other_conditions_fail_too(self):
+        """交易筆數不足時，狀態固定是「資料不足」，不受其他條件（這裡
+        連回撤也超標）影響，不會被誤判成「未達標」。"""
+        stats = _stats(total_trades=5, max_drawdown=200_000.0)
+        result = check_live_trading_gate(
+            stats, base_equity=1_000_000.0, portfolio_return=0.12, benchmark_return=0.05,
+            rules=_gate_rules(),
+        )
+        self.assertEqual(result.status, "資料不足")
 
     def test_fails_on_drawdown(self):
         stats = _stats(total_trades=30, max_drawdown=200_000.0)  # 20% > 15%門檻
@@ -410,6 +503,7 @@ class TestCheckLiveTradingGate(unittest.TestCase):
             rules=_gate_rules(),
         )
         self.assertFalse(result.passed)
+        self.assertEqual(result.status, "未達標")
         self.assertFalse(result.max_drawdown_ok)
         self.assertAlmostEqual(result.max_drawdown_pct, 0.20)
 
