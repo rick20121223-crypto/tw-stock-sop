@@ -1,5 +1,6 @@
 import unittest
 from datetime import date
+from unittest.mock import patch
 
 from ledger_store import Account, Order
 from performance import DailyEquity, Fill
@@ -133,9 +134,13 @@ class TestGoogleSheetsLedgerStoreInit(unittest.TestCase):
         self.assertIs(store._spreadsheet, spreadsheet)
 
     def test_init_raises_clear_error_when_spreadsheet_id_missing(self):
+        """明確mock掉get_secret，不依賴「這台機器沒有設定真實secrets」這個
+        環境假設——本機開發用的.streamlit/secrets.toml存在時，這個測試
+        不應該因此被real secret蓋過去而失敗。"""
         spreadsheet = _FakeSpreadsheet()
-        with self.assertRaises(LedgerReadError):
-            GoogleSheetsLedgerStore(client=_FakeClient(spreadsheet), spreadsheet_id="")
+        with patch("google_sheets_store.get_secret", return_value=""):
+            with self.assertRaises(LedgerReadError):
+                GoogleSheetsLedgerStore(client=_FakeClient(spreadsheet), spreadsheet_id="")
 
 
 class TestAccountsCrud(_GoogleSheetsStoreTestCase):
