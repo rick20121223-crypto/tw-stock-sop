@@ -2,8 +2,9 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
-from ledger_store import Account, CSVLedgerStore, Order
+from ledger_store import Account, CSVLedgerStore, Order, get_ledger_store
 from performance import DailyEquity, Fill
 
 
@@ -115,6 +116,21 @@ class TestCSVLedgerStore(unittest.TestCase):
         records = self.store.list_daily_equity()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].total_equity, 1_020_000.0)
+
+
+class TestGetLedgerStore(unittest.TestCase):
+    def test_returns_csv_store_when_spreadsheet_id_secret_not_set(self):
+        with patch("ledger_store.get_secret", return_value=""):
+            store = get_ledger_store()
+        self.assertIsInstance(store, CSVLedgerStore)
+
+    def test_returns_google_sheets_store_when_spreadsheet_id_secret_set(self):
+        sentinel = object()
+        with patch("ledger_store.get_secret", return_value="fake-spreadsheet-id"), \
+             patch("google_sheets_store.GoogleSheetsLedgerStore", return_value=sentinel) as mock_cls:
+            store = get_ledger_store()
+        self.assertIs(store, sentinel)
+        mock_cls.assert_called_once_with()
 
 
 if __name__ == "__main__":

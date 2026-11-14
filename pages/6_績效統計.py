@@ -16,7 +16,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from ledger_store import CSVLedgerStore, get_secret, require_pin
+from ledger_store import get_ledger_store, get_secret, require_pin
 from performance import check_live_trading_gate, compare_to_benchmark, compute_stats, match_fifo
 from stock_core import get_stock_data
 
@@ -42,7 +42,7 @@ with st.sidebar:
         else:
             api_token = st.text_input("FinMind API Token", type="password")
 
-store = CSVLedgerStore()
+store = get_ledger_store()
 accounts = store.list_accounts()
 
 if not accounts:

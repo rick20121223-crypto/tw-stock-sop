@@ -18,7 +18,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from ledger_store import Account, CSVLedgerStore, Order, require_pin
+from ledger_store import Account, Order, get_ledger_store, require_pin
 from performance import Fill, calc_fee, calc_sell_tax
 
 st.set_page_config(page_title="交易日誌", layout="wide", page_icon="📝")
@@ -33,7 +33,7 @@ st.caption(
     "只處理現股多頭（先買後賣），不支援融資融券/放空。"
 )
 
-store = CSVLedgerStore()
+store = get_ledger_store()
 REASON_CATEGORIES = ["買進", "加碼", "觀望", "賣出減碼"]
 
 # ------------------------------------------------------------------

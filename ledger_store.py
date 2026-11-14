@@ -336,3 +336,18 @@ class CSVLedgerStore(LedgerStore):
         records.append(record)
         _write_csv(self.daily_equity_path, _DAILY_EQUITY_FIELDS,
                     [_daily_equity_to_row(r) for r in records])
+
+
+def get_ledger_store() -> LedgerStore:
+    """`GOOGLE_SHEETS_SPREADSHEET_ID`這個secret有設定就回傳
+    `GoogleSheetsLedgerStore`，否則回傳`CSVLedgerStore`（本機開發預設）。
+    兩個Streamlit頁面都應該呼叫這個函式拿store，不要直接寫死
+    `CSVLedgerStore()`——之後想切換後端只要改secrets，不用改頁面程式碼。
+
+    `google_sheets_store`刻意延遲到函式內部才import：那個模組會
+    `from ledger_store import ...`，如果在這個檔案的模組最上層就
+    import google_sheets_store，兩個檔案會互相匯入造成循環依賴。"""
+    if get_secret("GOOGLE_SHEETS_SPREADSHEET_ID"):
+        from google_sheets_store import GoogleSheetsLedgerStore
+        return GoogleSheetsLedgerStore()
+    return CSVLedgerStore()
