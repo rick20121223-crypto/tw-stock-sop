@@ -16,3 +16,7 @@ data/my_holdings.csv
 # 指標搭配回測模組：本機抓取的原始資料快取與跑出來的報告，不需要進版控
 backtest/cache/
 backtest/output/
+
+# 紙上交易記帳（accounts/orders/fills/daily_equity），repo是公開的，
+# 這份模擬交易紀錄不可進版控
+data/paper_trading/
