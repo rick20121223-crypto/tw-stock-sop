@@ -23,14 +23,43 @@ import——開發機沒裝這兩個套件、只用本機CSV時，這個模組�
 """
 
 import json
-from typing import List
+import time
+from datetime import datetime
+from typing import Dict, List, Optional
+from uuid import uuid4
 
-from ledger_store import get_secret
+from ledger_store import (
+    _ACCOUNT_FIELDS,
+    _DAILY_EQUITY_FIELDS,
+    _FILL_FIELDS,
+    _ORDER_FIELDS,
+    Account,
+    LedgerStore,
+    Order,
+    _account_to_row,
+    _daily_equity_to_row,
+    _fill_to_row,
+    _order_to_row,
+    _row_to_account,
+    _row_to_daily_equity,
+    _row_to_fill,
+    _row_to_order,
+    get_secret,
+)
+from performance import DailyEquity, Fill
 
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+
+# 讀取快取：key是"{spreadsheet_id}:{worksheet_name}"，value是
+# (到期時間, 讀到的rows)。模組層級的全域dict，故意不是實例屬性——
+# Streamlit每次重跑腳本都會透過get_ledger_store()重新建立一個新的
+# GoogleSheetsLedgerStore，實例層級的快取活不過一次rerun，放模組層級
+# 才能真的在重跑之間省下API呼叫。
+_READ_CACHE: Dict[str, Dict] = {}
+_CACHE_TTL_SECONDS = 30
 
 
 class LedgerReadError(Exception):
@@ -61,7 +90,7 @@ def _ensure_header(worksheet, expected_fields: List[str]) -> None:
     不受影響。"""
     current = worksheet.row_values(1)
     if current != expected_fields:
-        worksheet.update("A1", [expected_fields])
+        worksheet.update("A1", [expected_fields], value_input_option="RAW")
 
 
 def _get_or_create_worksheet(spreadsheet, name: str, expected_fields: List[str]):
@@ -77,10 +106,44 @@ def _get_or_create_worksheet(spreadsheet, name: str, expected_fields: List[str])
     return worksheet
 
 
-class GoogleSheetsLedgerStore:
-    """跟`ledger_store.LedgerStore`同一套介面的Google Sheets實作。繼承
-    關係留到完整CRUD補上後再正式`(LedgerStore)`化——這一步先把認證跟
-    表頭管理的骨架搭好。"""
+def _cached_read_records(worksheet, cache_key: str) -> List[Dict]:
+    """30秒內同一個cache_key的重複讀取直接吃快取，不重打API。"""
+    cached = _READ_CACHE.get(cache_key)
+    now = time.time()
+    if cached is not None and cached["expires_at"] > now:
+        return cached["rows"]
+    rows = worksheet.get_all_records()
+    _READ_CACHE[cache_key] = {"expires_at": now + _CACHE_TTL_SECONDS, "rows": rows}
+    return rows
+
+
+def _invalidate_cache(cache_key: str) -> None:
+    _READ_CACHE.pop(cache_key, None)
+
+
+def _to_sheet_row(row: Dict, fields: List[str]) -> List[str]:
+    """把row dict的每個值都轉成字串才送進Sheets——Google Sheets的儲存格
+    有自己的型別系統（數字、布林值），`get_all_records()`預設會把它們讀
+    回Python的int/float/bool而不是字串，但`_row_to_account()`等既有的
+    轉換函式是照CSV的字串格式寫的（例如`row["is_active"] in ("True",
+    "true","1")`）。這裡統一轉成字串送出、搭配`value_input_option="RAW"`
+    （不讓Sheets自作主張解讀成數字/布林值），讀回來就一定是字串，兩種
+    LedgerStore實作的row轉換邏輯才能共用同一套，不用分別為CSV跟Sheets各
+    寫一套解析規則。"""
+    return [str(row[f]) for f in fields]
+
+
+class GoogleSheetsLedgerStore(LedgerStore):
+    """跟`ledger_store.CSVLedgerStore`同一個`LedgerStore`介面的Google
+    Sheets實作。`positions`沿用基底類別的`list_positions()`（對`fills`
+    跑`compute_positions()`），不開獨立工作表。
+
+    已知限制：每次新增/更新都會重新檢查一次工作表是否存在、表頭對不對
+    （`_get_or_create_worksheet`/`_ensure_header`各打一次API），對這個
+    「一人、一天幾筆手動成交」的量級無所謂，但如果之後用量變大，這裡
+    會是第一個需要優化（例如整個store生命週期內快取「工作表已確認過」
+    這件事）的地方。
+    """
 
     def __init__(self, client=None, spreadsheet_id: str = None):
         self._client = client or _build_client()
@@ -88,3 +151,141 @@ class GoogleSheetsLedgerStore:
         if not self._spreadsheet_id:
             raise LedgerReadError("缺少 GOOGLE_SHEETS_SPREADSHEET_ID secret，無法連線 Google Sheets")
         self._spreadsheet = self._client.open_by_key(self._spreadsheet_id)
+
+    def _worksheet(self, name: str, expected_fields: List[str]):
+        return _get_or_create_worksheet(self._spreadsheet, name, expected_fields)
+
+    def _cache_key(self, name: str) -> str:
+        return f"{self._spreadsheet_id}:{name}"
+
+    def _read_rows(self, name: str, expected_fields: List[str]) -> List[Dict]:
+        worksheet = self._worksheet(name, expected_fields)
+        return _cached_read_records(worksheet, self._cache_key(name))
+
+    def _invalidate(self, name: str) -> None:
+        _invalidate_cache(self._cache_key(name))
+
+    # accounts ----------------------------------------------------------
+    def list_accounts(self) -> List[Account]:
+        return [_row_to_account(r) for r in self._read_rows("accounts", _ACCOUNT_FIELDS)]
+
+    def add_account(self, account: Account) -> str:
+        if any(a.account_id == account.account_id for a in self.list_accounts()):
+            raise ValueError(f"account_id={account.account_id!r} 已經存在")
+        worksheet = self._worksheet("accounts", _ACCOUNT_FIELDS)
+        row = _account_to_row(account)
+        worksheet.append_row(_to_sheet_row(row, _ACCOUNT_FIELDS), value_input_option="RAW")
+        self._invalidate("accounts")
+        return account.account_id
+
+    # orders --------------------------------------------------------------
+    def list_orders(self, account_id: Optional[str] = None) -> List[Order]:
+        orders = [_row_to_order(r) for r in self._read_rows("orders", _ORDER_FIELDS)]
+        if account_id is not None:
+            orders = [o for o in orders if o.account_id == account_id]
+        return orders
+
+    def add_order(self, order: Order) -> str:
+        if not order.id:
+            order.id = str(uuid4())
+        order.created_at = order.created_at or datetime.now()
+        worksheet = self._worksheet("orders", _ORDER_FIELDS)
+        row = _order_to_row(order)
+        worksheet.append_row(_to_sheet_row(row, _ORDER_FIELDS), value_input_option="RAW")
+        self._invalidate("orders")
+        return order.id
+
+    def update_order_status(self, order_id: str, status: str) -> None:
+        """直接讀最新的(不吃快取)，才能確保行號正確。"""
+        worksheet = self._worksheet("orders", _ORDER_FIELDS)
+        records = worksheet.get_all_records()
+        for i, row in enumerate(records):
+            if row.get("id") == order_id:
+                order = _row_to_order(row)
+                order.status = status
+                updated_row = _order_to_row(order)
+                worksheet.update(f"A{i + 2}", [_to_sheet_row(updated_row, _ORDER_FIELDS)],
+                                  value_input_option="RAW")
+                self._invalidate("orders")
+                return
+        raise ValueError(f"找不到 order_id={order_id!r}")
+
+    # fills ------------------------------------------------------------------
+    def list_fills(self, account_id: Optional[str] = None) -> List[Fill]:
+        fills = [_row_to_fill(r) for r in self._read_rows("fills", _FILL_FIELDS)]
+        if account_id is not None:
+            fills = [f for f in fills if f.account_id == account_id]
+        return fills
+
+    def add_fill(self, fill: Fill) -> str:
+        """同一個order_id重複呼叫視為已處理過，直接跳過不重複寫入——
+        冪等的判斷基準是order_id，不是「帳戶+日期+代號+方向」，因為同一
+        天同一股票同方向分兩批成交(例如分批進場)是合理情境，用字面規則
+        會誤擋。沒有關聯委託(手動輸入)的成交不受這個去重規則影響，跟
+        CSVLedgerStore一致。"""
+        if fill.order_id:
+            existing = [f for f in self.list_fills() if f.order_id == fill.order_id]
+            if existing:
+                return existing[0].id
+        if not fill.id:
+            fill.id = str(uuid4())
+        fill.created_at = fill.created_at or datetime.now()
+        worksheet = self._worksheet("fills", _FILL_FIELDS)
+        row = _fill_to_row(fill)
+        worksheet.append_row(_to_sheet_row(row, _FILL_FIELDS), value_input_option="RAW")
+        self._invalidate("fills")
+        return fill.id
+
+    def add_fills_batch(self, fills: List[Fill]) -> List[str]:
+        """給第3個月的自動引擎用：收盤後一次把當天所有成交寫進去，一次
+        API呼叫(`append_rows`)寫多列，而不是每筆呼叫一次`add_fill()`。
+        跟`add_fill()`套用同一套order_id冪等規則，逐筆過濾掉已存在的，
+        剩下的才一次batch寫入。"""
+        existing_order_ids = {f.order_id for f in self.list_fills() if f.order_id}
+        to_write = []
+        ids = []
+        seen_in_batch = set()
+        for fill in fills:
+            if fill.order_id and (fill.order_id in existing_order_ids or fill.order_id in seen_in_batch):
+                existing_match = next(
+                    (f for f in self.list_fills() if f.order_id == fill.order_id), None
+                )
+                ids.append(existing_match.id if existing_match else fill.id)
+                continue
+            if not fill.id:
+                fill.id = str(uuid4())
+            fill.created_at = fill.created_at or datetime.now()
+            row = _fill_to_row(fill)
+            to_write.append(_to_sheet_row(row, _FILL_FIELDS))
+            ids.append(fill.id)
+            if fill.order_id:
+                seen_in_batch.add(fill.order_id)
+        if to_write:
+            worksheet = self._worksheet("fills", _FILL_FIELDS)
+            worksheet.append_rows(to_write, value_input_option="RAW")
+            self._invalidate("fills")
+        return ids
+
+    # daily_equity --------------------------------------------------------
+    def list_daily_equity(self, account_id: Optional[str] = None) -> List[DailyEquity]:
+        records = [_row_to_daily_equity(r) for r in self._read_rows("daily_equity", _DAILY_EQUITY_FIELDS)]
+        if account_id is not None:
+            records = [r for r in records if r.account_id == account_id]
+        return records
+
+    def add_daily_equity(self, record: DailyEquity) -> None:
+        """同一個(account_id, equity_date)重複呼叫會取代舊紀錄(upsert)，
+        跟CSVLedgerStore行為一致。"""
+        worksheet = self._worksheet("daily_equity", _DAILY_EQUITY_FIELDS)
+        records_raw = worksheet.get_all_records()
+        for i, row in enumerate(records_raw):
+            existing = _row_to_daily_equity(row)
+            if existing.account_id == record.account_id and existing.equity_date == record.equity_date:
+                new_row = _daily_equity_to_row(record)
+                worksheet.update(f"A{i + 2}", [_to_sheet_row(new_row, _DAILY_EQUITY_FIELDS)],
+                                  value_input_option="RAW")
+                self._invalidate("daily_equity")
+                return
+        new_row = _daily_equity_to_row(record)
+        worksheet.append_row(_to_sheet_row(new_row, _DAILY_EQUITY_FIELDS), value_input_option="RAW")
+        self._invalidate("daily_equity")
