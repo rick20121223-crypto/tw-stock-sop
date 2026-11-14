@@ -4,9 +4,11 @@ from datetime import date
 from performance import (
     ClosedTrade,
     Fill,
+    Position,
     calc_fee,
     calc_sell_tax,
     compare_to_benchmark,
+    compute_daily_equity,
     compute_positions,
     compute_stats,
     match_fifo,
@@ -302,6 +304,37 @@ class TestCompareToBenchmark(unittest.TestCase):
         result = compare_to_benchmark([], [(date(2026, 1, 1), 100.0)])
         self.assertIsNone(result["portfolio_return"])
         self.assertIsNone(result["benchmark_return"])
+
+
+class TestComputeDailyEquity(unittest.TestCase):
+    def test_marks_position_to_latest_close(self):
+        positions = [Position(account_id="v1", code="2330", shares=100, avg_cost=100.0)]
+        result = compute_daily_equity(
+            account_id="v1", initial_capital=1_000_000.0, cash=900_000.0,
+            positions=positions, price_lookup=lambda code, d: 110.0,
+            as_of_date=date(2026, 6, 1),
+        )
+        self.assertEqual(result.positions_value, 100 * 110.0)
+        self.assertEqual(result.total_equity, 900_000.0 + 100 * 110.0)
+        self.assertEqual(result.cumulative_pnl, result.total_equity - 1_000_000.0)
+
+    def test_missing_price_falls_back_to_avg_cost(self):
+        positions = [Position(account_id="v1", code="2330", shares=100, avg_cost=100.0)]
+        result = compute_daily_equity(
+            account_id="v1", initial_capital=1_000_000.0, cash=900_000.0,
+            positions=positions, price_lookup=lambda code, d: None,
+            as_of_date=date(2026, 6, 1),
+        )
+        self.assertEqual(result.positions_value, 100 * 100.0)
+
+    def test_no_positions_equity_is_just_cash(self):
+        result = compute_daily_equity(
+            account_id="v1", initial_capital=1_000_000.0, cash=1_000_000.0,
+            positions=[], price_lookup=lambda code, d: None, as_of_date=date(2026, 6, 1),
+        )
+        self.assertEqual(result.positions_value, 0.0)
+        self.assertEqual(result.total_equity, 1_000_000.0)
+        self.assertEqual(result.cumulative_pnl, 0.0)
 
 
 if __name__ == "__main__":

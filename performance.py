@@ -18,7 +18,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -355,3 +355,47 @@ def compare_to_benchmark(closed_trades: List[ClosedTrade],
 def _price_on_or_before(prices: List[Tuple[date, float]], target: date) -> Optional[float]:
     candidates = [p for d, p in prices if d <= target]
     return candidates[-1] if candidates else None
+
+
+@dataclass
+class DailyEquity:
+    account_id: str
+    equity_date: date
+    cash: float
+    positions_value: float
+    total_equity: float
+    cumulative_pnl: float
+
+
+# compute_daily_equity() 的 price_lookup(code, date) -> Optional[float]（當天
+# 收盤價，查無資料回None），跟 fill_rules.PriceLookup（回傳dict含prev_close）
+# 是不同的簽名——兩邊需求不同，不要搞混。
+DailyPriceLookup = Callable[[str, date], Optional[float]]
+
+
+def compute_daily_equity(account_id: str, initial_capital: float, cash: float,
+                          positions: List[Position], price_lookup: DailyPriceLookup,
+                          as_of_date: date) -> DailyEquity:
+    """給定某天的現金餘額、目前未平倉的positions（由compute_positions()
+    算出）、跟一個「查某代號某天收盤價」的函式，算出那一天的淨值快照。
+    查無收盤價的持倉會用avg_cost代替做mark-to-market（假設當天沒有變動），
+    不是精確數字，只是避免整列算不出來。
+
+    這個函式只算「單一一天」的快照，不會自己往前回補歷史、也不會自己
+    判斷「今天是不是交易日」——這些留給之後的自動引擎或你手動呼叫時決定。
+    """
+    positions_value = 0.0
+    for p in positions:
+        price = price_lookup(p.code, as_of_date)
+        mark_price = price if price is not None else p.avg_cost
+        positions_value += p.shares * mark_price
+    total_equity = cash + positions_value
+    cumulative_pnl = total_equity - initial_capital
+    return DailyEquity(
+        account_id=account_id,
+        equity_date=as_of_date,
+        cash=cash,
+        positions_value=positions_value,
+        total_equity=total_equity,
+        cumulative_pnl=cumulative_pnl,
+    )
