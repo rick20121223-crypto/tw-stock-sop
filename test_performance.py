@@ -4,15 +4,35 @@ from datetime import date
 from performance import (
     ClosedTrade,
     Fill,
+    PerformanceStats,
     Position,
     calc_fee,
     calc_sell_tax,
+    check_live_trading_gate,
     compare_to_benchmark,
     compute_daily_equity,
     compute_positions,
     compute_stats,
     match_fifo,
 )
+
+
+def _gate_rules(min_trade_count=30, max_drawdown_pct=0.15, require_beat_benchmark=True):
+    return {
+        "live_trading_gate": {
+            "min_trade_count": min_trade_count,
+            "max_drawdown_pct": max_drawdown_pct,
+            "require_beat_benchmark": require_beat_benchmark,
+        }
+    }
+
+
+def _stats(total_trades=30, max_drawdown=100_000.0):
+    return PerformanceStats(
+        total_trades=total_trades, win_rate=0.6, avg_win=10_000.0, avg_loss=-5_000.0,
+        profit_factor=2.0, expectancy=3_000.0, avg_r_multiple=1.2, trades_with_r=total_trades,
+        equity_curve=[], max_drawdown=max_drawdown, avg_holding_days=10.0,
+    )
 
 
 def _costs(discount: float = 1.0, min_fee: float = 0) -> dict:
@@ -335,6 +355,67 @@ class TestComputeDailyEquity(unittest.TestCase):
         self.assertEqual(result.positions_value, 0.0)
         self.assertEqual(result.total_equity, 1_000_000.0)
         self.assertEqual(result.cumulative_pnl, 0.0)
+
+
+class TestCheckLiveTradingGate(unittest.TestCase):
+    def test_all_three_conditions_pass(self):
+        stats = _stats(total_trades=30, max_drawdown=100_000.0)  # 10% of 1,000,000 base_equity
+        result = check_live_trading_gate(
+            stats, base_equity=1_000_000.0, portfolio_return=0.12, benchmark_return=0.05,
+            rules=_gate_rules(),
+        )
+        self.assertTrue(result.passed)
+        self.assertTrue(result.trade_count_ok)
+        self.assertTrue(result.max_drawdown_ok)
+        self.assertAlmostEqual(result.max_drawdown_pct, 0.10)
+        self.assertTrue(result.beats_benchmark)
+
+    def test_fails_on_trade_count(self):
+        stats = _stats(total_trades=10, max_drawdown=100_000.0)
+        result = check_live_trading_gate(
+            stats, base_equity=1_000_000.0, portfolio_return=0.12, benchmark_return=0.05,
+            rules=_gate_rules(),
+        )
+        self.assertFalse(result.passed)
+        self.assertFalse(result.trade_count_ok)
+        self.assertTrue(result.max_drawdown_ok)
+
+    def test_fails_on_drawdown(self):
+        stats = _stats(total_trades=30, max_drawdown=200_000.0)  # 20% > 15%門檻
+        result = check_live_trading_gate(
+            stats, base_equity=1_000_000.0, portfolio_return=0.12, benchmark_return=0.05,
+            rules=_gate_rules(),
+        )
+        self.assertFalse(result.passed)
+        self.assertFalse(result.max_drawdown_ok)
+        self.assertAlmostEqual(result.max_drawdown_pct, 0.20)
+
+    def test_fails_when_not_beating_benchmark(self):
+        stats = _stats(total_trades=30, max_drawdown=100_000.0)
+        result = check_live_trading_gate(
+            stats, base_equity=1_000_000.0, portfolio_return=0.03, benchmark_return=0.05,
+            rules=_gate_rules(),
+        )
+        self.assertFalse(result.passed)
+        self.assertFalse(result.beats_benchmark)
+
+    def test_missing_benchmark_data_fails_closed_when_required(self):
+        stats = _stats(total_trades=30, max_drawdown=100_000.0)
+        result = check_live_trading_gate(
+            stats, base_equity=1_000_000.0, portfolio_return=None, benchmark_return=None,
+            rules=_gate_rules(),
+        )
+        self.assertFalse(result.passed)
+        self.assertIsNone(result.beats_benchmark)
+
+    def test_benchmark_not_required_can_still_pass(self):
+        stats = _stats(total_trades=30, max_drawdown=100_000.0)
+        result = check_live_trading_gate(
+            stats, base_equity=1_000_000.0, portfolio_return=0.03, benchmark_return=0.05,
+            rules=_gate_rules(require_beat_benchmark=False),
+        )
+        self.assertTrue(result.passed)
+        self.assertFalse(result.beats_benchmark)  # 數值仍然如實回報，只是不列入passed判斷
 
 
 if __name__ == "__main__":

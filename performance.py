@@ -23,6 +23,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import yaml
 
 _COSTS_PATH = Path(__file__).with_name("trading_costs.yaml")
+_RULES_PATH = Path(__file__).with_name("trading_rules.yaml")
 
 
 def _load_costs() -> Dict:
@@ -30,7 +31,13 @@ def _load_costs() -> Dict:
         return yaml.safe_load(f)
 
 
+def _load_trading_rules() -> Dict:
+    with open(_RULES_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
 COSTS = _load_costs()
+TRADING_RULES = _load_trading_rules()
 
 
 def calc_fee(price: float, shares: int, costs: Dict = COSTS) -> float:
@@ -410,4 +417,48 @@ def compute_daily_equity(account_id: str, initial_capital: float, cash: float,
         positions_value=positions_value,
         total_equity=total_equity,
         cumulative_pnl=cumulative_pnl,
+    )
+
+
+@dataclass
+class GateResult:
+    passed: bool
+    beats_benchmark: Optional[bool]  # None=還沒有足夠資料能比較
+    max_drawdown_ok: bool
+    max_drawdown_pct: Optional[float]  # None=base_equity無效，算不出百分比
+    trade_count_ok: bool
+    forward_vs_backtest_note: str = "尚未串接"  # 占位欄位，前向結果與回測是否相近，之後再接
+
+
+def check_live_trading_gate(stats: PerformanceStats, base_equity: float,
+                             portfolio_return: Optional[float],
+                             benchmark_return: Optional[float],
+                             rules: Dict = TRADING_RULES) -> GateResult:
+    """「放行實單標準」：扣成本後報酬優於0050、最大回撤不超過門檻、已平倉
+    交易筆數達到下限，三者同時成立才算放行。`base_equity`通常傳帳戶的
+    `initial_capital`，用來把`stats.max_drawdown`（絕對金額）換算成占淨值
+    的百分比。portfolio_return/benchmark_return任一為None（還沒有足夠資料
+    算出報酬率對照）時，視為「無法確認優於0050」，`require_beat_benchmark`
+    開著的話這條件就不算過（寧可保守，不猜）。"""
+    gate_cfg = rules["live_trading_gate"]
+
+    trade_count_ok = stats.total_trades >= gate_cfg["min_trade_count"]
+
+    max_drawdown_pct = (stats.max_drawdown / base_equity) if base_equity else None
+    max_drawdown_ok = max_drawdown_pct is not None and max_drawdown_pct <= gate_cfg["max_drawdown_pct"]
+
+    if portfolio_return is None or benchmark_return is None:
+        beats_benchmark: Optional[bool] = None
+    else:
+        beats_benchmark = portfolio_return > benchmark_return
+
+    require_beat = gate_cfg.get("require_beat_benchmark", True)
+    benchmark_ok = (beats_benchmark is True) if require_beat else True
+
+    return GateResult(
+        passed=trade_count_ok and max_drawdown_ok and benchmark_ok,
+        beats_benchmark=beats_benchmark,
+        max_drawdown_ok=max_drawdown_ok,
+        max_drawdown_pct=max_drawdown_pct,
+        trade_count_ok=trade_count_ok,
     )
