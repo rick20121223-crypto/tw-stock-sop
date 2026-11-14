@@ -70,6 +70,24 @@ class LedgerWriteError(Exception):
     """寫入資料到Google Sheets失敗（重試用盡後）。"""
 
 
+def _with_retry(func, error_cls, operation_desc: str, max_attempts: int = 3,
+                 backoff_base: float = 1.0, sleep_func=time.sleep):
+    """執行func()，失敗（網路錯誤/429限流/暫時性5xx等任何例外）時用指數
+    退避重試最多max_attempts次（等待時間backoff_base、backoff_base*2、
+    backoff_base*4...），全部失敗才包成error_cls往上丟——不吞掉，呼叫端
+    （目前是Streamlit頁面）會看到明確的錯誤訊息，知道這筆沒有真的寫入/
+    讀到最新資料。"""
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            return func()
+        except Exception as exc:  # noqa: BLE001 - 刻意攔截所有例外，重試用盡後統一轉型
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                sleep_func(backoff_base * (2 ** attempt))
+    raise error_cls(f"{operation_desc}失敗，已重試{max_attempts}次：{last_exc}") from last_exc
+
+
 def _build_client():
     """用`GOOGLE_SERVICE_ACCOUNT_JSON`secret建立真正的gspread client。
     只在沒有注入假client時才會被呼叫（見GoogleSheetsLedgerStore.__init__），
@@ -85,34 +103,45 @@ def _build_client():
     return gspread.authorize(credentials)
 
 
-def _ensure_header(worksheet, expected_fields: List[str]) -> None:
+def _ensure_header(worksheet, expected_fields: List[str], backoff_base: float = 1.0) -> None:
     """表頭不存在或跟預期不符時（欄位缺漏/順序不對）覆寫第一列，資料列
     不受影響。"""
-    current = worksheet.row_values(1)
+    current = _with_retry(lambda: worksheet.row_values(1), LedgerReadError, "讀取表頭",
+                           backoff_base=backoff_base)
     if current != expected_fields:
-        worksheet.update("A1", [expected_fields], value_input_option="RAW")
+        _with_retry(
+            lambda: worksheet.update("A1", [expected_fields], value_input_option="RAW"),
+            LedgerWriteError, "寫入表頭", backoff_base=backoff_base,
+        )
 
 
-def _get_or_create_worksheet(spreadsheet, name: str, expected_fields: List[str]):
+def _get_or_create_worksheet(spreadsheet, name: str, expected_fields: List[str],
+                              backoff_base: float = 1.0):
     """工作表不存在就建立一個新的，不管是不是新建都會確保表頭正確。用
     `spreadsheet.worksheets()`列出現有工作表名稱判斷存不存在，不依賴
     gspread特定的例外類別——這樣假client測試double完全不需要認識gspread
     這個套件本身。"""
-    existing = {ws.title: ws for ws in spreadsheet.worksheets()}
+    worksheets = _with_retry(spreadsheet.worksheets, LedgerReadError, "列出工作表",
+                              backoff_base=backoff_base)
+    existing = {ws.title: ws for ws in worksheets}
     worksheet = existing.get(name)
     if worksheet is None:
-        worksheet = spreadsheet.add_worksheet(title=name, rows=1000, cols=max(len(expected_fields), 1))
-    _ensure_header(worksheet, expected_fields)
+        worksheet = _with_retry(
+            lambda: spreadsheet.add_worksheet(title=name, rows=1000, cols=max(len(expected_fields), 1)),
+            LedgerWriteError, f"建立工作表{name}", backoff_base=backoff_base,
+        )
+    _ensure_header(worksheet, expected_fields, backoff_base=backoff_base)
     return worksheet
 
 
-def _cached_read_records(worksheet, cache_key: str) -> List[Dict]:
+def _cached_read_records(worksheet, cache_key: str, backoff_base: float = 1.0) -> List[Dict]:
     """30秒內同一個cache_key的重複讀取直接吃快取，不重打API。"""
     cached = _READ_CACHE.get(cache_key)
     now = time.time()
     if cached is not None and cached["expires_at"] > now:
         return cached["rows"]
-    rows = worksheet.get_all_records()
+    rows = _with_retry(worksheet.get_all_records, LedgerReadError, "讀取資料列",
+                        backoff_base=backoff_base)
     _READ_CACHE[cache_key] = {"expires_at": now + _CACHE_TTL_SECONDS, "rows": rows}
     return rows
 
@@ -145,25 +174,33 @@ class GoogleSheetsLedgerStore(LedgerStore):
     這件事）的地方。
     """
 
-    def __init__(self, client=None, spreadsheet_id: str = None):
+    def __init__(self, client=None, spreadsheet_id: str = None, retry_backoff_base: float = 1.0):
+        self._backoff_base = retry_backoff_base
         self._client = client or _build_client()
         self._spreadsheet_id = spreadsheet_id or get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
         if not self._spreadsheet_id:
             raise LedgerReadError("缺少 GOOGLE_SHEETS_SPREADSHEET_ID secret，無法連線 Google Sheets")
-        self._spreadsheet = self._client.open_by_key(self._spreadsheet_id)
+        self._spreadsheet = _with_retry(
+            lambda: self._client.open_by_key(self._spreadsheet_id),
+            LedgerReadError, "開啟試算表", backoff_base=self._backoff_base,
+        )
 
     def _worksheet(self, name: str, expected_fields: List[str]):
-        return _get_or_create_worksheet(self._spreadsheet, name, expected_fields)
+        return _get_or_create_worksheet(self._spreadsheet, name, expected_fields,
+                                         backoff_base=self._backoff_base)
 
     def _cache_key(self, name: str) -> str:
         return f"{self._spreadsheet_id}:{name}"
 
     def _read_rows(self, name: str, expected_fields: List[str]) -> List[Dict]:
         worksheet = self._worksheet(name, expected_fields)
-        return _cached_read_records(worksheet, self._cache_key(name))
+        return _cached_read_records(worksheet, self._cache_key(name), backoff_base=self._backoff_base)
 
     def _invalidate(self, name: str) -> None:
         _invalidate_cache(self._cache_key(name))
+
+    def _retry(self, func, error_cls, operation_desc: str):
+        return _with_retry(func, error_cls, operation_desc, backoff_base=self._backoff_base)
 
     # accounts ----------------------------------------------------------
     def list_accounts(self) -> List[Account]:
@@ -174,7 +211,10 @@ class GoogleSheetsLedgerStore(LedgerStore):
             raise ValueError(f"account_id={account.account_id!r} 已經存在")
         worksheet = self._worksheet("accounts", _ACCOUNT_FIELDS)
         row = _account_to_row(account)
-        worksheet.append_row(_to_sheet_row(row, _ACCOUNT_FIELDS), value_input_option="RAW")
+        self._retry(
+            lambda: worksheet.append_row(_to_sheet_row(row, _ACCOUNT_FIELDS), value_input_option="RAW"),
+            LedgerWriteError, "新增帳戶",
+        )
         self._invalidate("accounts")
         return account.account_id
 
@@ -191,21 +231,27 @@ class GoogleSheetsLedgerStore(LedgerStore):
         order.created_at = order.created_at or datetime.now()
         worksheet = self._worksheet("orders", _ORDER_FIELDS)
         row = _order_to_row(order)
-        worksheet.append_row(_to_sheet_row(row, _ORDER_FIELDS), value_input_option="RAW")
+        self._retry(
+            lambda: worksheet.append_row(_to_sheet_row(row, _ORDER_FIELDS), value_input_option="RAW"),
+            LedgerWriteError, "新增委託",
+        )
         self._invalidate("orders")
         return order.id
 
     def update_order_status(self, order_id: str, status: str) -> None:
         """直接讀最新的(不吃快取)，才能確保行號正確。"""
         worksheet = self._worksheet("orders", _ORDER_FIELDS)
-        records = worksheet.get_all_records()
+        records = self._retry(worksheet.get_all_records, LedgerReadError, "讀取委託")
         for i, row in enumerate(records):
             if row.get("id") == order_id:
                 order = _row_to_order(row)
                 order.status = status
                 updated_row = _order_to_row(order)
-                worksheet.update(f"A{i + 2}", [_to_sheet_row(updated_row, _ORDER_FIELDS)],
-                                  value_input_option="RAW")
+                self._retry(
+                    lambda: worksheet.update(f"A{i + 2}", [_to_sheet_row(updated_row, _ORDER_FIELDS)],
+                                              value_input_option="RAW"),
+                    LedgerWriteError, "更新委託狀態",
+                )
                 self._invalidate("orders")
                 return
         raise ValueError(f"找不到 order_id={order_id!r}")
@@ -232,7 +278,10 @@ class GoogleSheetsLedgerStore(LedgerStore):
         fill.created_at = fill.created_at or datetime.now()
         worksheet = self._worksheet("fills", _FILL_FIELDS)
         row = _fill_to_row(fill)
-        worksheet.append_row(_to_sheet_row(row, _FILL_FIELDS), value_input_option="RAW")
+        self._retry(
+            lambda: worksheet.append_row(_to_sheet_row(row, _FILL_FIELDS), value_input_option="RAW"),
+            LedgerWriteError, "新增成交",
+        )
         self._invalidate("fills")
         return fill.id
 
@@ -262,7 +311,10 @@ class GoogleSheetsLedgerStore(LedgerStore):
                 seen_in_batch.add(fill.order_id)
         if to_write:
             worksheet = self._worksheet("fills", _FILL_FIELDS)
-            worksheet.append_rows(to_write, value_input_option="RAW")
+            self._retry(
+                lambda: worksheet.append_rows(to_write, value_input_option="RAW"),
+                LedgerWriteError, "批次新增成交",
+            )
             self._invalidate("fills")
         return ids
 
@@ -277,15 +329,21 @@ class GoogleSheetsLedgerStore(LedgerStore):
         """同一個(account_id, equity_date)重複呼叫會取代舊紀錄(upsert)，
         跟CSVLedgerStore行為一致。"""
         worksheet = self._worksheet("daily_equity", _DAILY_EQUITY_FIELDS)
-        records_raw = worksheet.get_all_records()
+        records_raw = self._retry(worksheet.get_all_records, LedgerReadError, "讀取每日淨值")
         for i, row in enumerate(records_raw):
             existing = _row_to_daily_equity(row)
             if existing.account_id == record.account_id and existing.equity_date == record.equity_date:
                 new_row = _daily_equity_to_row(record)
-                worksheet.update(f"A{i + 2}", [_to_sheet_row(new_row, _DAILY_EQUITY_FIELDS)],
-                                  value_input_option="RAW")
+                self._retry(
+                    lambda: worksheet.update(f"A{i + 2}", [_to_sheet_row(new_row, _DAILY_EQUITY_FIELDS)],
+                                              value_input_option="RAW"),
+                    LedgerWriteError, "更新每日淨值",
+                )
                 self._invalidate("daily_equity")
                 return
         new_row = _daily_equity_to_row(record)
-        worksheet.append_row(_to_sheet_row(new_row, _DAILY_EQUITY_FIELDS), value_input_option="RAW")
+        self._retry(
+            lambda: worksheet.append_row(_to_sheet_row(new_row, _DAILY_EQUITY_FIELDS), value_input_option="RAW"),
+            LedgerWriteError, "新增每日淨值",
+        )
         self._invalidate("daily_equity")

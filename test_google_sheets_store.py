@@ -6,8 +6,9 @@ from performance import DailyEquity, Fill
 from google_sheets_store import (
     GoogleSheetsLedgerStore,
     LedgerReadError,
+    LedgerWriteError,
     _get_or_create_worksheet,
-    _invalidate_cache,
+    _with_retry,
 )
 
 
@@ -114,9 +115,10 @@ class _GoogleSheetsStoreTestCase(unittest.TestCase):
     def setUp(self):
         _invalidate_cache_all()
 
-    def _make_store(self, spreadsheet=None, spreadsheet_id="fake-id"):
+    def _make_store(self, spreadsheet=None, spreadsheet_id="fake-id", retry_backoff_base=0):
         spreadsheet = spreadsheet or _FakeSpreadsheet()
-        return GoogleSheetsLedgerStore(client=_FakeClient(spreadsheet), spreadsheet_id=spreadsheet_id)
+        return GoogleSheetsLedgerStore(client=_FakeClient(spreadsheet), spreadsheet_id=spreadsheet_id,
+                                        retry_backoff_base=retry_backoff_base)
 
 
 def _invalidate_cache_all():
@@ -315,6 +317,97 @@ class TestReadCache(_GoogleSheetsStoreTestCase):
         store.add_account(Account(account_id="v2", label="波段v1"))  # 寫入應該讓快取失效
         accounts = store.list_accounts()
         self.assertEqual(len(accounts), 2)  # 讀到最新的2筆，不是快取住的舊的1筆
+
+
+class _FlakyCounter:
+    """前`fail_times`次呼叫都丟例外，之後呼叫真正的`real_func`。"""
+
+    def __init__(self, fail_times, real_func=None, result=None):
+        self.fail_times = fail_times
+        self.real_func = real_func
+        self.result = result
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise RuntimeError("模擬暫時性錯誤（網路/429限流）")
+        return self.real_func(*args, **kwargs) if self.real_func else self.result
+
+
+class TestWithRetry(unittest.TestCase):
+    def test_succeeds_after_transient_failures(self):
+        flaky = _FlakyCounter(fail_times=2, result="ok")
+        result = _with_retry(flaky, LedgerWriteError, "測試操作", max_attempts=3,
+                              backoff_base=0, sleep_func=lambda s: None)
+        self.assertEqual(result, "ok")
+        self.assertEqual(flaky.calls, 3)
+
+    def test_raises_after_exhausting_retries_not_silently(self):
+        flaky = _FlakyCounter(fail_times=10, result="ok")
+        with self.assertRaises(LedgerWriteError):
+            _with_retry(flaky, LedgerWriteError, "測試操作", max_attempts=3,
+                        backoff_base=0, sleep_func=lambda s: None)
+        self.assertEqual(flaky.calls, 3)  # 剛好試滿max_attempts次就停止，不會無限重試
+
+    def test_uses_given_error_class_for_reads(self):
+        flaky = _FlakyCounter(fail_times=10)
+        with self.assertRaises(LedgerReadError):
+            _with_retry(flaky, LedgerReadError, "測試讀取", max_attempts=2,
+                        backoff_base=0, sleep_func=lambda s: None)
+
+    def test_error_message_includes_operation_desc_and_original_exception(self):
+        flaky = _FlakyCounter(fail_times=10)
+        try:
+            _with_retry(flaky, LedgerWriteError, "新增成交", max_attempts=2,
+                        backoff_base=0, sleep_func=lambda s: None)
+            self.fail("應該要丟出LedgerWriteError")
+        except LedgerWriteError as exc:
+            self.assertIn("新增成交", str(exc))
+            self.assertIn("模擬暫時性錯誤", str(exc))
+
+
+class TestRetryIntegration(_GoogleSheetsStoreTestCase):
+    """確認重試機制真的接到實際的CRUD方法上，不是只有_with_retry本身
+    的單元測試過而已。"""
+
+    def test_add_account_retries_transient_failure_then_succeeds(self):
+        spreadsheet = _FakeSpreadsheet()
+        store = self._make_store(spreadsheet=spreadsheet)
+        store.add_account(Account(account_id="v0", label="暖身"))  # 先把工作表/表頭建好
+        worksheet = store._spreadsheet.worksheet("accounts")
+        flaky = _FlakyCounter(fail_times=2, real_func=worksheet.append_row)
+        worksheet.append_row = flaky
+
+        store.add_account(Account(account_id="v1", label="短線v1"))
+
+        self.assertEqual(flaky.calls, 3)
+        self.assertEqual(len(store.list_accounts()), 2)
+
+    def test_add_account_raises_ledger_write_error_after_exhausting_retries(self):
+        spreadsheet = _FakeSpreadsheet()
+        store = self._make_store(spreadsheet=spreadsheet)
+        store.add_account(Account(account_id="v0", label="暖身"))
+        worksheet = store._spreadsheet.worksheet("accounts")
+        worksheet.append_row = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("永久性錯誤"))
+
+        with self.assertRaises(LedgerWriteError):
+            store.add_account(Account(account_id="v1", label="短線v1"))
+
+        self.assertEqual(len(store.list_accounts()), 1)  # v1確實沒寫進去，不是悄悄失敗又假裝成功
+
+    def test_list_accounts_retries_transient_read_failure(self):
+        spreadsheet = _FakeSpreadsheet()
+        store = self._make_store(spreadsheet=spreadsheet)
+        store.add_account(Account(account_id="v1", label="短線v1"))
+        worksheet = store._spreadsheet.worksheet("accounts")
+        flaky = _FlakyCounter(fail_times=1, real_func=worksheet.get_all_records)
+        worksheet.get_all_records = flaky
+
+        accounts = store.list_accounts()
+
+        self.assertEqual(len(accounts), 1)
+        self.assertEqual(flaky.calls, 2)
 
 
 if __name__ == "__main__":
