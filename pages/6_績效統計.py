@@ -17,7 +17,7 @@ import plotly.express as px
 import streamlit as st
 
 from ledger_store import CSVLedgerStore, get_secret, require_pin
-from performance import compare_to_benchmark, compute_stats, match_fifo
+from performance import check_live_trading_gate, compare_to_benchmark, compute_stats, match_fifo
 from stock_core import get_stock_data
 
 st.set_page_config(page_title="績效統計", layout="wide", page_icon="📊")
@@ -113,13 +113,41 @@ def _render_account(account_id: str) -> None:
     price_df = get_stock_data("0050", "TW", fetch_start.isoformat(), end.isoformat(), api_token)
     if price_df.empty:
         st.warning("抓不到0050歷史價格，請確認FinMind Token設定正確。")
-        return
-    benchmark_prices = list(zip(pd.to_datetime(price_df["date"]).dt.date, price_df["close"]))
-    comparison = compare_to_benchmark(closed, benchmark_prices)
-    if comparison["portfolio_return"] is not None:
-        col_b1, col_b2 = st.columns(2)
-        col_b1.metric("帳戶報酬率（近似值）", f"{comparison['portfolio_return']:.1%}")
-        col_b2.metric("0050同期買進持有報酬率", f"{comparison['benchmark_return']:.1%}")
+        comparison = {"portfolio_return": None, "benchmark_return": None}
+    else:
+        benchmark_prices = list(zip(pd.to_datetime(price_df["date"]).dt.date, price_df["close"]))
+        comparison = compare_to_benchmark(closed, benchmark_prices)
+        if comparison["portfolio_return"] is not None:
+            col_b1, col_b2 = st.columns(2)
+            col_b1.metric("帳戶報酬率（近似值）", f"{comparison['portfolio_return']:.1%}")
+            col_b2.metric("0050同期買進持有報酬率", f"{comparison['benchmark_return']:.1%}")
+
+    st.markdown("**放行實單標準**")
+    gate = check_live_trading_gate(
+        stats, base_equity=account.initial_capital,
+        portfolio_return=comparison["portfolio_return"],
+        benchmark_return=comparison["benchmark_return"],
+    )
+    if gate.passed:
+        st.success("✅ 符合放行標準")
+    else:
+        st.warning("❌ 尚未符合放行標準")
+    col_g1, col_g2, col_g3 = st.columns(3)
+    col_g1.metric(
+        "扣成本後優於0050",
+        "—" if gate.beats_benchmark is None else ("是" if gate.beats_benchmark else "否"),
+    )
+    col_g2.metric(
+        "最大回撤",
+        "—" if gate.max_drawdown_pct is None else f"{gate.max_drawdown_pct:.1%}",
+        help="門檻：≤15%",
+    )
+    col_g3.metric(
+        "交易筆數",
+        f"{stats.total_trades}",
+        help="門檻：≥30筆",
+    )
+    st.caption(f"前向結果與回測是否相近：{gate.forward_vs_backtest_note}")
 
 
 if len(selected_ids) == 1:

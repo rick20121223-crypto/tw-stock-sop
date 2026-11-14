@@ -45,8 +45,10 @@ if accounts:
     st.dataframe(
         pd.DataFrame([
             {
-                "account_id": a.account_id, "名稱": a.label, "規則版本標籤": a.rule_version_tag,
+                "account_id": a.account_id, "名稱": a.label, "持有週期": a.holding_period_type,
+                "規則版本標籤": a.rule_version_tag,
                 "初始本金": a.initial_capital, "單筆部位上限": f"{a.max_position_pct:.0%}",
+                "單筆最大虧損": f"{a.max_loss_pct:.1%}",
                 "持股檔數上限": a.max_holdings_count, "建立日期": a.created_date,
                 "啟用中": a.is_active,
             }
@@ -59,7 +61,7 @@ else:
 
 with st.expander("➕ 新增帳戶", expanded=not accounts):
     with st.form("add_account_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             new_account_id = st.text_input("帳戶ID（例如 v1）")
             new_label = st.text_input("名稱")
@@ -68,6 +70,9 @@ with st.expander("➕ 新增帳戶", expanded=not accounts):
             new_capital = st.number_input("初始本金", min_value=0.0, value=1_000_000.0, step=10_000.0)
             new_max_pct = st.slider("單筆部位上限（占目前帳戶淨值）", 0.01, 1.0, 0.2)
             new_max_holdings = st.number_input("持股檔數上限", min_value=1, value=10, step=1)
+        with col3:
+            new_holding_period = st.radio("持有週期類型", ["短線", "波段"], horizontal=True)
+            new_max_loss_pct = st.slider("單筆最大虧損（占目前帳戶淨值）", 0.001, 0.10, 0.01, format="%.3f")
         if st.form_submit_button("新增帳戶"):
             if not new_account_id or not new_label:
                 st.error("請填帳戶ID與名稱")
@@ -77,6 +82,7 @@ with st.expander("➕ 新增帳戶", expanded=not accounts):
                         account_id=new_account_id.strip(), label=new_label,
                         rule_version_tag=new_rule_tag, initial_capital=new_capital,
                         max_position_pct=new_max_pct, max_holdings_count=int(new_max_holdings),
+                        max_loss_pct=new_max_loss_pct, holding_period_type=new_holding_period,
                         created_date=date.today(),
                     ))
                     st.success("已新增帳戶")
