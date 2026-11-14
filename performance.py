@@ -165,7 +165,13 @@ def match_fifo(fills: List[Fill]) -> List[ClosedTrade]:
     顯然有誤，不靜默吞掉）。"""
     closed: List[ClosedTrade] = []
     for (account_id, code), group in _group_by_account_code(fills).items():
-        ordered = sorted(group, key=lambda f: (f.fill_date, f.id))
+        # 只排fill_date，刻意不加f.id當次要排序鍵：同一天兩筆成交（例如
+        # 當沖買賣同一天）的相對先後順序，靠Python排序穩定(stable sort)
+        # 保留輸入清單原本的順序（list_fills()回傳的是CSV寫入順序=實際
+        # 發生順序）。曾經用(f.fill_date, f.id)排序，id是建立時隨機產生
+        # 的uuid，同一天兩筆成交的先後變成看隨機字串比大小，單元測試因此
+        # 間歇性失敗（約一半機率把賣出排到買入前面，誤判成「賣出超過持倉」）。
+        ordered = sorted(group, key=lambda f: f.fill_date)
         try:
             closed_groups, _ = _walk_account_code(ordered)
         except ValueError as e:
@@ -181,7 +187,13 @@ def compute_positions(fills: List[Fill]) -> List[Position]:
     不是列出來顯示0）。"""
     positions: List[Position] = []
     for (account_id, code), group in _group_by_account_code(fills).items():
-        ordered = sorted(group, key=lambda f: (f.fill_date, f.id))
+        # 只排fill_date，刻意不加f.id當次要排序鍵：同一天兩筆成交（例如
+        # 當沖買賣同一天）的相對先後順序，靠Python排序穩定(stable sort)
+        # 保留輸入清單原本的順序（list_fills()回傳的是CSV寫入順序=實際
+        # 發生順序）。曾經用(f.fill_date, f.id)排序，id是建立時隨機產生
+        # 的uuid，同一天兩筆成交的先後變成看隨機字串比大小，單元測試因此
+        # 間歇性失敗（約一半機率把賣出排到買入前面，誤判成「賣出超過持倉」）。
+        ordered = sorted(group, key=lambda f: f.fill_date)
         try:
             _, open_lots = _walk_account_code(ordered)
         except ValueError as e:
