@@ -21,8 +21,9 @@ class _FakeWorksheet:
         self.append_rows_calls = 0
 
     def row_values(self, row_number):
-        if row_number == 1 and self.rows:
-            return self.rows[0]
+        """跟gspread一樣：任意列號都可查，超出範圍回傳空list。"""
+        if 1 <= row_number <= len(self.rows):
+            return self.rows[row_number - 1]
         return []
 
     def update(self, range_name, values, value_input_option=None):
@@ -79,15 +80,39 @@ class TestGetOrCreateWorksheet(unittest.TestCase):
         self.assertEqual(ws.rows, [["account_id", "label"]])
         self.assertIn("accounts", [w.title for w in spreadsheet.worksheets()])
 
-    def test_fixes_mismatched_header_without_touching_data_rows(self):
+    def test_fixes_mismatched_header_when_no_data_rows(self):
         spreadsheet = _FakeSpreadsheet()
         existing = spreadsheet.add_worksheet(title="accounts", rows=10, cols=2)
-        existing.rows = [["舊欄位1", "舊欄位2"], ["v1", "規則版本1"]]
+        existing.rows = [["舊欄位1", "舊欄位2"]]  # 只有表頭，沒有資料列
 
         ws = _get_or_create_worksheet(spreadsheet, "accounts", ["account_id", "label"])
 
         self.assertEqual(ws.rows[0], ["account_id", "label"])
-        self.assertEqual(ws.rows[1], ["v1", "規則版本1"])  # 資料列不受影響
+
+    def test_mismatched_header_with_data_rows_raises_instead_of_corrupting(self):
+        """表頭不一致（不是尾端延伸）且已有資料列時，自動覆寫表頭會讓
+        既有資料整排錯位（舊值被對應到錯的欄位名），必須拒絕並報錯，
+        要求人工遷移。"""
+        spreadsheet = _FakeSpreadsheet()
+        existing = spreadsheet.add_worksheet(title="accounts", rows=10, cols=2)
+        existing.rows = [["舊欄位1", "舊欄位2"], ["v1", "規則版本1"]]
+
+        with self.assertRaises(LedgerWriteError):
+            _get_or_create_worksheet(spreadsheet, "accounts", ["account_id", "label"])
+        self.assertEqual(existing.rows[0], ["舊欄位1", "舊欄位2"])  # 表頭沒被動過
+
+    def test_tail_extended_header_with_data_rows_is_written(self):
+        """dataclass在最後面加新欄位（舊表頭是新表頭的prefix）是安全的
+        schema演進方式：舊資料列缺的尾端欄位讀回來是空字串、套預設值，
+        所以即使已有資料列也允許覆寫表頭。"""
+        spreadsheet = _FakeSpreadsheet()
+        existing = spreadsheet.add_worksheet(title="accounts", rows=10, cols=2)
+        existing.rows = [["account_id", "label"], ["v1", "規則版本1"]]
+
+        ws = _get_or_create_worksheet(spreadsheet, "accounts", ["account_id", "label", "新欄位"])
+
+        self.assertEqual(ws.rows[0], ["account_id", "label", "新欄位"])
+        self.assertEqual(ws.rows[1], ["v1", "規則版本1"])  # 資料列不動
 
     def test_header_already_correct_is_left_alone(self):
         spreadsheet = _FakeSpreadsheet()
@@ -315,6 +340,17 @@ class TestCorporateActionsCrud(_GoogleSheetsStoreTestCase):
         store.add_corporate_action(self._action(account_id="v2"))
         self.assertEqual(len(store.list_corporate_actions()), 2)
         self.assertEqual(len(store.list_corporate_actions(account_id="v1")), 1)
+
+    def test_add_corporate_action_same_natural_key_is_idempotent(self):
+        """同一(帳戶,代號,除息日)重複寫入要回傳既有紀錄id、不多寫一列——
+        引擎補跑/重跑同一天不可以把現金股利重複入帳。"""
+        store = self._make_store()
+        first_id = store.add_corporate_action(self._action())
+        second_id = store.add_corporate_action(self._action())
+        self.assertEqual(first_id, second_id)
+        self.assertEqual(len(store.list_corporate_actions()), 1)
+        worksheet = store._spreadsheet.worksheet("corporate_actions")
+        self.assertEqual(worksheet.append_row_calls, 1)  # 第二次真的沒打寫入API
 
     def test_list_positions_applies_registered_corporate_actions(self):
         """跟CSVLedgerStore一樣，list_positions()要自動套用corporate_actions

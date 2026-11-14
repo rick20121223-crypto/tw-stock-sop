@@ -11,6 +11,14 @@ positions不是獨立儲存的表，是呼叫performance.compute_positions()對f
 只是方便呼叫的包裝，不接受直接寫入）。daily_equity/corporate_actions這個
 月不會自動寫入（那是第3個月自動引擎的工作），add_daily_equity()/
 add_corporate_action()給你手動呼叫驗證流程。
+
+【欄位順序規則】這裡的Account/Order與performance.py的Fill/DailyEquity/
+CorporateAction這幾個dataclass，之後要新增欄位時**一律加在最後面**，不要
+插在中間：CSV/Sheets的表頭順序直接來自dataclass欄位順序，Google Sheets
+的既有工作表只會被修正表頭、不會搬移資料列——欄位插在中間會讓已有資料
+整排錯位（google_sheets_store._ensure_header()遇到這種情況會直接報錯拒絕
+覆寫，要求人工遷移；加在最後面則是安全的，舊資料列缺的尾端欄位會被讀成
+空字串、套預設值）。
 """
 
 import csv
@@ -39,8 +47,8 @@ class Account:
     max_loss_pct: float = 0.01  # 單筆最大虧損，占「目前帳戶淨值」的比例，position_sizing.py用來反推股數
     holding_period_type: str = "短線"  # "短線" 或 "波段"
     created_date: Optional[date] = None
-    go_live_date: Optional[date] = None  # 正式開始算6個月放行觀察期的起點；沒填就等於created_date（見__post_init__）
     is_active: bool = True
+    go_live_date: Optional[date] = None  # 正式開始算6個月放行觀察期的起點；沒填就等於created_date（見__post_init__）。放最後面是遵守模組docstring的欄位順序規則
 
     def __post_init__(self):
         if self.go_live_date is None:
@@ -62,9 +70,9 @@ class Order:
     status: str = "pending"  # pending/filled/deferred/cancelled
     priority_rank: Optional[int] = None  # 同日訊號數超過空位/現金時，position_sizing.prioritize_candidates()排出的名次
     priority_reason: str = ""  # 排序依據的文字說明，供事後稽核「為什麼這張單被排擠掉」
-    universe_version: str = ""  # 產生這張委託當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）
     id: str = ""
     created_at: Optional[datetime] = None
+    universe_version: str = ""  # 產生這張委託當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）。放最後面是遵守模組docstring的欄位順序規則
 
 
 def get_secret(key: str) -> str:
@@ -393,7 +401,19 @@ class CSVLedgerStore(LedgerStore):
         return actions
 
     def add_corporate_action(self, action: CorporateAction) -> str:
+        """同一個(account_id, code, ex_date)重複呼叫視為已處理過，直接回傳
+        既有紀錄的id不重複寫入——同一檔股票同一天不會有兩次除權息，這是
+        天然鍵。沒有這層冪等的話，第3個月自動引擎補跑/重跑同一天會把
+        現金股利重複入帳。"""
         actions = [_row_to_corporate_action(r) for r in _read_csv(self.corporate_actions_path)]
+        existing = next(
+            (a for a in actions
+             if a.account_id == action.account_id and a.code == action.code
+             and a.ex_date == action.ex_date),
+            None,
+        )
+        if existing:
+            return existing.id
         if not action.id:
             action.id = str(uuid4())
         action.created_at = action.created_at or datetime.now()

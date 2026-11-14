@@ -166,6 +166,14 @@ class TestCSVLedgerStore(unittest.TestCase):
         self.assertEqual(len(self.store.list_corporate_actions()), 2)
         self.assertEqual(len(self.store.list_corporate_actions(account_id="v1")), 1)
 
+    def test_add_corporate_action_same_natural_key_is_idempotent(self):
+        """同一(帳戶,代號,除息日)重複寫入要回傳既有紀錄id、不多寫一列——
+        引擎補跑/重跑同一天不可以把現金股利重複入帳。"""
+        first_id = self.store.add_corporate_action(self._corporate_action())
+        second_id = self.store.add_corporate_action(self._corporate_action())
+        self.assertEqual(first_id, second_id)
+        self.assertEqual(len(self.store.list_corporate_actions()), 1)
+
     def test_list_positions_applies_registered_corporate_actions(self):
         self.store.add_fill(self._fill(side="買", shares=1000))
         self.store.add_corporate_action(self._corporate_action())

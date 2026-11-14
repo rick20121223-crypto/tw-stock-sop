@@ -107,15 +107,38 @@ def _build_client():
 
 
 def _ensure_header(worksheet, expected_fields: List[str], backoff_base: float = 1.0) -> None:
-    """表頭不存在或跟預期不符時（欄位缺漏/順序不對）覆寫第一列，資料列
-    不受影響。"""
+    """表頭不存在或跟預期不符時覆寫第一列。安全規則：
+
+    - 表頭完全一致：不動。
+    - 新表頭是舊表頭的「尾端延伸」（舊表頭是新表頭的prefix，例如dataclass
+      在最後面加了新欄位）：直接覆寫表頭，舊資料列缺的尾端欄位讀回來會是
+      空字串、由row轉換函式套預設值，安全。
+    - 其他不一致（欄位插在中間/順序改了/欄位被移除）且工作表已有資料列：
+      **拒絕自動覆寫、直接報錯**——只改表頭不搬資料列會讓既有資料整排
+      錯位（例如舊的is_active值被讀成新欄位的值），必須人工遷移。這也是
+      為什麼之後dataclass新增欄位一律要加在最後面（見ledger_store.py的
+      欄位順序規則說明）。
+    - 其他不一致但工作表沒有任何資料列：覆寫表頭，安全。
+    """
     current = _with_retry(lambda: worksheet.row_values(1), LedgerReadError, "讀取表頭",
                            backoff_base=backoff_base)
-    if current != expected_fields:
-        _with_retry(
-            lambda: worksheet.update("A1", [expected_fields], value_input_option="RAW"),
-            LedgerWriteError, "寫入表頭", backoff_base=backoff_base,
-        )
+    if current == expected_fields:
+        return
+    is_tail_extension = bool(current) and current == expected_fields[:len(current)]
+    if not is_tail_extension:
+        first_data_row = _with_retry(lambda: worksheet.row_values(2), LedgerReadError,
+                                      "檢查資料列", backoff_base=backoff_base)
+        if first_data_row:
+            raise LedgerWriteError(
+                f"工作表{worksheet.title}的表頭與程式預期不符，且已有資料列。"
+                f"自動覆寫表頭會讓既有資料列欄位錯位，請先手動遷移資料（調整"
+                f"欄位順序或清空工作表）再重試。現有表頭={current}，"
+                f"預期表頭={expected_fields}"
+            )
+    _with_retry(
+        lambda: worksheet.update("A1", [expected_fields], value_input_option="RAW"),
+        LedgerWriteError, "寫入表頭", backoff_base=backoff_base,
+    )
 
 
 def _get_or_create_worksheet(spreadsheet, name: str, expected_fields: List[str],
@@ -360,6 +383,17 @@ class GoogleSheetsLedgerStore(LedgerStore):
         return actions
 
     def add_corporate_action(self, action: CorporateAction) -> str:
+        """同一個(account_id, code, ex_date)重複呼叫視為已處理過，直接回傳
+        既有紀錄的id不重複寫入（跟CSVLedgerStore一致）——沒有這層冪等的
+        話，第3個月自動引擎補跑/重跑同一天會把現金股利重複入帳。"""
+        existing = next(
+            (a for a in self.list_corporate_actions()
+             if a.account_id == action.account_id and a.code == action.code
+             and a.ex_date == action.ex_date),
+            None,
+        )
+        if existing:
+            return existing.id
         if not action.id:
             action.id = str(uuid4())
         action.created_at = action.created_at or datetime.now()

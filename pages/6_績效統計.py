@@ -21,7 +21,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from backtest.data_fetch import fetch_total_return_daily
+from backtest.data_fetch import detect_price_gaps, fetch_total_return_daily
 from ledger_store import get_ledger_store, get_secret, require_pin
 from performance import check_live_trading_gate, compare_to_benchmark, compute_stats, match_fifo
 
@@ -97,34 +97,40 @@ def _render_account(account_id: str) -> None:
     closed = closed_all if source_filter is None else [t for t in closed_all if t.source == source_filter]
     closed_system = [t for t in closed_all if t.source == "system"]
 
-    if not closed:
-        st.info("這個帳戶（在目前的來源篩選下）沒有已平倉的交易。")
+    if not closed_all:
+        st.info("這個帳戶（上線日之後）沒有任何已平倉的交易。")
         return
 
-    stats = compute_stats(closed)
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("總交易筆數", stats.total_trades)
-    col2.metric("勝率", f"{stats.win_rate:.1%}")
-    col3.metric("盈虧比", f"{stats.profit_factor:.2f}" if stats.profit_factor is not None else "—")
-    col4.metric("每筆期望值", f"{stats.expectancy:,.0f}")
+    # 上半部的統計/曲線依UI來源篩選；下半部的放行實單標準固定用system單，
+    # 不受篩選影響——所以就算目前篩選下沒有交易，也不能提早return，gate
+    # 區塊還是要渲染。
+    if not closed:
+        st.info("這個帳戶（在目前的來源篩選下）沒有已平倉的交易。")
+    else:
+        stats = compute_stats(closed)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("總交易筆數", stats.total_trades)
+        col2.metric("勝率", f"{stats.win_rate:.1%}")
+        col3.metric("盈虧比", f"{stats.profit_factor:.2f}" if stats.profit_factor is not None else "—")
+        col4.metric("每筆期望值", f"{stats.expectancy:,.0f}")
 
-    col5, col6, col7, col8 = st.columns(4)
-    col5.metric("平均獲利", f"{stats.avg_win:,.0f}")
-    col6.metric("平均虧損", f"{stats.avg_loss:,.0f}")
-    col7.metric(
-        "平均R倍數",
-        f"{stats.avg_r_multiple:.2f}" if stats.avg_r_multiple is not None else "—",
-        help=f"{stats.trades_with_r}/{stats.total_trades} 筆有填停損價，僅這些筆數納入R倍數統計",
-    )
-    col8.metric("平均持有天數", f"{stats.avg_holding_days:.1f}")
-    st.metric("最大回撤", f"{stats.max_drawdown:,.0f}")
-
-    if stats.equity_curve:
-        curve_df = pd.DataFrame(stats.equity_curve, columns=["日期", "累積損益"])
-        st.plotly_chart(
-            px.line(curve_df, x="日期", y="累積損益", title=f"{account_id} 累積損益曲線"),
-            use_container_width=True,
+        col5, col6, col7, col8 = st.columns(4)
+        col5.metric("平均獲利", f"{stats.avg_win:,.0f}")
+        col6.metric("平均虧損", f"{stats.avg_loss:,.0f}")
+        col7.metric(
+            "平均R倍數",
+            f"{stats.avg_r_multiple:.2f}" if stats.avg_r_multiple is not None else "—",
+            help=f"{stats.trades_with_r}/{stats.total_trades} 筆有填停損價，僅這些筆數納入R倍數統計",
         )
+        col8.metric("平均持有天數", f"{stats.avg_holding_days:.1f}")
+        st.metric("最大回撤", f"{stats.max_drawdown:,.0f}")
+
+        if stats.equity_curve:
+            curve_df = pd.DataFrame(stats.equity_curve, columns=["日期", "累積損益"])
+            st.plotly_chart(
+                px.line(curve_df, x="日期", y="累積損益", title=f"{account_id} 累積損益曲線"),
+                use_container_width=True,
+            )
 
     st.markdown("**與 0050 買進持有對照（含息）**")
     start = min(t.entry_date for t in closed_all)
@@ -136,6 +142,16 @@ def _render_account(account_id: str) -> None:
         comparison = {"portfolio_return": None, "benchmark_return": None}
         gate_comparison = {"portfolio_return": None, "benchmark_return": None}
     else:
+        # TaiwanStockDividendResult只涵蓋除權息，不含股票分割（0050在
+        # 2025-06有1拆4分割）——交易期間內若還有這種未被還原的價格斷層，
+        # 對照結果會嚴重失真，用現成的detect_price_gaps()偵測並警告。
+        in_period = price_df[pd.to_datetime(price_df["date"]).dt.date >= start]
+        gaps = detect_price_gaps(in_period.reset_index(drop=True))
+        if not gaps.empty:
+            st.warning(
+                f"0050在交易期間內有{len(gaps)}個未被除權息資料涵蓋的單日跳空"
+                f"（例如股票分割），含息對照可能失真：{gaps['date'].tolist()}"
+            )
         benchmark_prices = list(zip(pd.to_datetime(price_df["date"]).dt.date, price_df["close"]))
         comparison = compare_to_benchmark(closed, benchmark_prices)
         gate_comparison = compare_to_benchmark(closed_system, benchmark_prices)

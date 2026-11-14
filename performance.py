@@ -87,10 +87,10 @@ class Fill:
     source: str = "system"  # "system" 或 "manual"
     planned_stop_loss: Optional[float] = None  # 從originating order複製過來，只有買方有意義，R倍數計算用
     exit_reason: str = ""
-    universe_version: str = ""  # 建立這筆成交當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）
     id: str = ""
     order_id: str = ""
     created_at: Optional[datetime] = None
+    universe_version: str = ""  # 建立這筆成交當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）。放最後面是遵守ledger_store.py docstring的欄位順序規則
 
 
 @dataclass
@@ -128,7 +128,14 @@ class CorporateAction:
     可以同時不為0（股票同時配發現金+股票股利）。這個月只定義資料結構+
     純函式（見compute_positions的corporate_actions參數、
     compute_pending_dividend_cash()），實際把現金寫進帳戶現金是第3個月
-    自動引擎的工作。"""
+    自動引擎的工作。
+
+    已知限制（第3個月接引擎時要處理）：股票股利目前只影響compute_positions
+    的持倉快照，match_fifo()的FIFO配對只看fills本身——如果實際賣出的股數
+    包含配股配來的股數（例如1000股配0.1變1100股後賣出1100股），match_fifo
+    會誤判「賣出股數超過目前持倉」。屆時引擎產生賣單時股數要以含配股後的
+    持倉為上限，且賣出配股股數的FIFO配對方式要先設計（例如把配股記成一筆
+    0元成本的買入fill），不能直接沿用現狀。"""
     account_id: str
     code: str
     ex_date: date
