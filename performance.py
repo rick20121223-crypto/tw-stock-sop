@@ -249,3 +249,109 @@ def _finalize_round_trip(account_id: str, code: str, fills: List[_Chunk]) -> Clo
         source=next(iter(sources)),
         holding_days=(exit_date - entry_date).days,
     )
+
+
+@dataclass
+class PerformanceStats:
+    total_trades: int
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    profit_factor: Optional[float]
+    expectancy: float
+    avg_r_multiple: Optional[float]
+    trades_with_r: int
+    equity_curve: List[Tuple[date, float]]
+    max_drawdown: float
+    avg_holding_days: float
+
+
+def compute_stats(closed_trades: List[ClosedTrade], source: Optional[str] = None) -> PerformanceStats:
+    """win = net_pnl > 0；loss = net_pnl <= 0（打平算虧損，偏保守）。
+    equity_curve 依exit_date排序累加；max_drawdown是累積損益曲線上任一
+    高點到之後低點的最大跌幅（正數）。source給"system"或"manual"時只納入
+    該來源的交易（例如只看系統自動單的績效，排除人工介入單），留None
+    (預設)則不篩選、兩種來源都算。多帳戶比較請由呼叫端先依account_id
+    篩好closed_trades再各自呼叫這個函式，這裡不內建跨帳戶分組。"""
+    if source is not None:
+        closed_trades = [t for t in closed_trades if t.source == source]
+
+    total = len(closed_trades)
+    wins = [t.net_pnl for t in closed_trades if t.net_pnl > 0]
+    losses = [t.net_pnl for t in closed_trades if t.net_pnl <= 0]
+    win_rate = len(wins) / total if total else 0.0
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    profit_factor = (avg_win / abs(avg_loss)) if avg_loss else None
+    expectancy = win_rate * avg_win + (1 - win_rate) * avg_loss
+
+    r_values = [t.r_multiple for t in closed_trades if t.r_multiple is not None]
+    avg_r_multiple = sum(r_values) / len(r_values) if r_values else None
+
+    ordered = sorted(closed_trades, key=lambda t: t.exit_date)
+    equity_curve: List[Tuple[date, float]] = []
+    cumulative = 0.0
+    for t in ordered:
+        cumulative += t.net_pnl
+        equity_curve.append((t.exit_date, cumulative))
+
+    max_drawdown = 0.0
+    peak = float("-inf")
+    for _, cum in equity_curve:
+        peak = max(peak, cum)
+        max_drawdown = max(max_drawdown, peak - cum)
+
+    avg_holding_days = sum(t.holding_days for t in closed_trades) / total if total else 0.0
+
+    return PerformanceStats(
+        total_trades=total,
+        win_rate=win_rate,
+        avg_win=avg_win,
+        avg_loss=avg_loss,
+        profit_factor=profit_factor,
+        expectancy=expectancy,
+        avg_r_multiple=avg_r_multiple,
+        trades_with_r=len(r_values),
+        equity_curve=equity_curve,
+        max_drawdown=max_drawdown,
+        avg_holding_days=avg_holding_days,
+    )
+
+
+def compare_to_benchmark(closed_trades: List[ClosedTrade],
+                          benchmark_prices: List[Tuple[date, float]]) -> Dict:
+    """benchmark_prices：依日期升冪排列的(日期,收盤價)序列，由呼叫端自行
+    用stock_core.get_stock_data()取得後轉換傳入——本函式不自己打API，
+    保持純函式、好測試。
+
+    回傳的portfolio_return是用「總進場成本」當分母的近似報酬率，不是
+    嚴謹的時間加權報酬率(TWR)，重疊資金效應未處理，僅供個人粗略比較。
+    """
+    if not closed_trades:
+        return {"portfolio_return": None, "benchmark_return": None,
+                "period_start": None, "period_end": None}
+
+    start = min(t.entry_date for t in closed_trades)
+    end = max(t.exit_date for t in closed_trades)
+    start_price = _price_on_or_before(benchmark_prices, start)
+    end_price = _price_on_or_before(benchmark_prices, end)
+    if start_price is None or end_price is None:
+        return {"portfolio_return": None, "benchmark_return": None,
+                "period_start": start, "period_end": end}
+
+    benchmark_return = (end_price / start_price) - 1
+    total_cost_basis = sum(t.avg_entry_price * t.shares for t in closed_trades)
+    total_net_pnl = sum(t.net_pnl for t in closed_trades)
+    portfolio_return = (total_net_pnl / total_cost_basis) if total_cost_basis else None
+
+    return {
+        "portfolio_return": portfolio_return,
+        "benchmark_return": benchmark_return,
+        "period_start": start,
+        "period_end": end,
+    }
+
+
+def _price_on_or_before(prices: List[Tuple[date, float]], target: date) -> Optional[float]:
+    candidates = [p for d, p in prices if d <= target]
+    return candidates[-1] if candidates else None

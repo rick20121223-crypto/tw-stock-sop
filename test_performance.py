@@ -1,7 +1,16 @@
 import unittest
 from datetime import date
 
-from performance import Fill, calc_fee, calc_sell_tax, compute_positions, match_fifo
+from performance import (
+    ClosedTrade,
+    Fill,
+    calc_fee,
+    calc_sell_tax,
+    compare_to_benchmark,
+    compute_positions,
+    compute_stats,
+    match_fifo,
+)
 
 
 def _costs(discount: float = 1.0, min_fee: float = 0) -> dict:
@@ -207,6 +216,92 @@ class TestComputePositions(unittest.TestCase):
 
     def test_no_fills_at_all_produces_no_rows(self):
         self.assertEqual(compute_positions([]), [])
+
+
+class TestComputeStats(unittest.TestCase):
+    def _closed_trade(self, net_pnl, r_multiple, exit_date, holding_days, source="system"):
+        return ClosedTrade(
+            account_id="v1", code="2330", entry_date=exit_date, exit_date=exit_date, shares=1000,
+            avg_entry_price=100.0, avg_exit_price=100.0, buy_cost=0.0, sell_cost=0.0,
+            gross_pnl=net_pnl, net_pnl=net_pnl, r_multiple=r_multiple,
+            is_day_trade=False, source=source, holding_days=holding_days,
+        )
+
+    def test_stats_over_three_trades(self):
+        ct1 = self._closed_trade(8369, 1.3948333333333334, date(2026, 1, 20), 15)
+        ct2 = self._closed_trade(-11542, -1.9236666666666666, date(2026, 2, 10), 7)
+        ct3 = self._closed_trade(8966, None, date(2026, 3, 15), 13)
+        stats = compute_stats([ct1, ct2, ct3])
+
+        self.assertEqual(stats.total_trades, 3)
+        self.assertAlmostEqual(stats.win_rate, 2 / 3)
+        self.assertAlmostEqual(stats.avg_win, (8369 + 8966) / 2)
+        self.assertAlmostEqual(stats.avg_loss, -11542)
+        self.assertAlmostEqual(stats.profit_factor, 8667.5 / 11542)
+        self.assertAlmostEqual(stats.expectancy, (2 / 3) * 8667.5 + (1 / 3) * (-11542))
+        self.assertEqual(stats.trades_with_r, 2)
+        self.assertAlmostEqual(stats.avg_r_multiple, (1.3948333333333334 - 1.9236666666666666) / 2)
+        self.assertEqual(
+            stats.equity_curve,
+            [
+                (date(2026, 1, 20), 8369),
+                (date(2026, 2, 10), 8369 - 11542),
+                (date(2026, 3, 15), 8369 - 11542 + 8966),
+            ],
+        )
+        self.assertAlmostEqual(stats.max_drawdown, 11542)
+        self.assertAlmostEqual(stats.avg_holding_days, (15 + 7 + 13) / 3)
+
+    def test_empty_list_does_not_crash(self):
+        stats = compute_stats([])
+        self.assertEqual(stats.total_trades, 0)
+        self.assertEqual(stats.win_rate, 0.0)
+        self.assertIsNone(stats.profit_factor)
+        self.assertIsNone(stats.avg_r_multiple)
+        self.assertEqual(stats.equity_curve, [])
+
+    def test_source_filter_excludes_manual(self):
+        ct_system = self._closed_trade(8369, 1.0, date(2026, 1, 20), 15, source="system")
+        ct_manual = self._closed_trade(-500, -0.5, date(2026, 1, 25), 5, source="manual")
+        stats_all = compute_stats([ct_system, ct_manual])
+        stats_system_only = compute_stats([ct_system, ct_manual], source="system")
+
+        self.assertEqual(stats_all.total_trades, 2)
+        self.assertEqual(stats_system_only.total_trades, 1)
+        self.assertEqual(stats_system_only.avg_win, 8369)
+
+
+class TestCompareToBenchmark(unittest.TestCase):
+    def _closed_trade(self, entry_date, exit_date, avg_entry_price, shares, net_pnl):
+        return ClosedTrade(
+            account_id="v1", code="2330", entry_date=entry_date, exit_date=exit_date, shares=shares,
+            avg_entry_price=avg_entry_price, avg_exit_price=avg_entry_price, buy_cost=0.0,
+            sell_cost=0.0, gross_pnl=net_pnl, net_pnl=net_pnl, r_multiple=None,
+            is_day_trade=False, source="system", holding_days=1,
+        )
+
+    def test_compare_to_0050(self):
+        ct_a = self._closed_trade(date(2026, 1, 5), date(2026, 1, 20), 100.0, 1000, 5000.0)
+        ct_b = self._closed_trade(date(2026, 3, 2), date(2026, 3, 15), 200.0, 500, -2000.0)
+        benchmark_prices = [
+            (date(2026, 1, 1), 130.0),
+            (date(2026, 1, 20), 135.0),
+            (date(2026, 3, 15), 140.0),
+        ]
+        result = compare_to_benchmark([ct_a, ct_b], benchmark_prices)
+
+        expected_portfolio_return = (5000.0 - 2000.0) / (100.0 * 1000 + 200.0 * 500)
+        expected_benchmark_return = 140.0 / 130.0 - 1
+
+        self.assertAlmostEqual(result["portfolio_return"], expected_portfolio_return)
+        self.assertAlmostEqual(result["benchmark_return"], expected_benchmark_return)
+        self.assertEqual(result["period_start"], date(2026, 1, 5))
+        self.assertEqual(result["period_end"], date(2026, 3, 15))
+
+    def test_empty_closed_trades_returns_none(self):
+        result = compare_to_benchmark([], [(date(2026, 1, 1), 100.0)])
+        self.assertIsNone(result["portfolio_return"])
+        self.assertIsNone(result["benchmark_return"])
 
 
 if __name__ == "__main__":
