@@ -13,6 +13,11 @@ data/historical_backtest.csv
 # 真實持股成本/股數（停損規則用），repo是公開的，這份資料不可進版控
 data/my_holdings.csv
 
+# 紙上交易記帳CSVLedgerStore的本機資料（帳戶/委託/成交/除權息紀錄），
+# 不管是不是「紙上」交易，repo是公開的，這份資料不可進版控——Google
+# Sheets是正式後端，這裡只是本機開發/沒設定Sheets secrets時的CSV備援
+data/paper_trading/
+
 # 指標搭配回測模組：本機抓取的原始資料快取與跑出來的報告，不需要進版控
 backtest/cache/
 backtest/output/
