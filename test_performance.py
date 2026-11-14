@@ -1,3 +1,4 @@
+import math
 import unittest
 from datetime import date
 
@@ -35,9 +36,14 @@ def _stats(total_trades=30, max_drawdown=100_000.0):
     )
 
 
-def _costs(discount: float = 1.0, min_fee: float = 0) -> dict:
+def _costs(discount: float = 1.0, min_fee_round_lot: float = 0, min_fee_odd_lot: float = 0) -> dict:
     return {
-        "brokerage_fee": {"legal_rate": 0.001425, "discount": discount, "min_fee": min_fee},
+        "brokerage_fee": {
+            "legal_rate": 0.001425,
+            "discount": discount,
+            "min_fee_round_lot": min_fee_round_lot,
+            "min_fee_odd_lot": min_fee_odd_lot,
+        },
         "securities_tax": {
             "stock_rate": 0.003,
             "etf_rate": 0.001,
@@ -48,32 +54,43 @@ def _costs(discount: float = 1.0, min_fee: float = 0) -> dict:
 
 
 class TestFees(unittest.TestCase):
-    def test_calc_fee_no_discount(self):
+    def test_calc_fee_no_discount_truncates_not_rounds(self):
+        """37*1000*0.001425=52.725——無條件捨去（元大官網的算法）應該是52，
+        不是四捨五入的53，用小數部分>=0.5的數字驗證真的是floor不是round。"""
         fee = calc_fee(price=37, shares=1000, costs=_costs())
-        self.assertEqual(fee, round(37 * 1000 * 0.001425 * 1.0))
+        self.assertEqual(fee, 52)
+        self.assertEqual(fee, math.floor(37 * 1000 * 0.001425 * 1.0))
 
-    def test_calc_fee_with_discount(self):
+    def test_calc_fee_with_discount_truncates(self):
         fee = calc_fee(price=37, shares=1000, costs=_costs(discount=0.6))
-        self.assertEqual(fee, round(37 * 1000 * 0.001425 * 0.6))
+        self.assertEqual(fee, 31)
+        self.assertEqual(fee, math.floor(37 * 1000 * 0.001425 * 0.6))
 
-    def test_calc_fee_hits_min_fee_floor(self):
-        costs = _costs(discount=0.6, min_fee=20)
-        fee = calc_fee(price=5, shares=100, costs=costs)
-        raw_rounded = round(5 * 100 * 0.001425 * 0.6)
-        self.assertEqual(raw_rounded, 0)  # 沒有min_fee時原本會是0
-        self.assertEqual(fee, 20)  # 被min_fee墊高
+    def test_calc_fee_hits_round_lot_min_fee_floor(self):
+        costs = _costs(discount=0.6, min_fee_round_lot=20, min_fee_odd_lot=1)
+        fee = calc_fee(price=5, shares=1000, costs=costs)  # 整股（1000的倍數）
+        raw_floor = math.floor(5 * 1000 * 0.001425 * 0.6)
+        self.assertEqual(raw_floor, 4)  # 沒有min_fee時原本只有4
+        self.assertEqual(fee, 20)  # 被min_fee_round_lot墊高
+
+    def test_calc_fee_hits_odd_lot_min_fee_floor(self):
+        costs = _costs(discount=0.6, min_fee_round_lot=20, min_fee_odd_lot=1)
+        fee = calc_fee(price=5, shares=100, costs=costs)  # 零股（不是1000的倍數）
+        raw_floor = math.floor(5 * 100 * 0.001425 * 0.6)
+        self.assertEqual(raw_floor, 0)
+        self.assertEqual(fee, 1)  # 被min_fee_odd_lot墊高（不是round_lot的20）
 
     def test_calc_sell_tax_stock_not_day_trade(self):
         tax = calc_sell_tax(price=37, shares=1000, is_etf=False, is_day_trade=False, costs=_costs())
-        self.assertEqual(tax, round(37 * 1000 * 0.003))
+        self.assertEqual(tax, math.floor(37 * 1000 * 0.003))
 
     def test_calc_sell_tax_stock_day_trade_is_halved(self):
         tax = calc_sell_tax(price=38, shares=1000, is_etf=False, is_day_trade=True, costs=_costs())
-        self.assertEqual(tax, round(38 * 1000 * 0.0015))
+        self.assertEqual(tax, math.floor(38 * 1000 * 0.0015))
 
     def test_calc_sell_tax_etf_not_day_trade(self):
         tax = calc_sell_tax(price=37, shares=1000, is_etf=True, is_day_trade=False, costs=_costs())
-        self.assertEqual(tax, round(37 * 1000 * 0.001))
+        self.assertEqual(tax, math.floor(37 * 1000 * 0.001))
 
     def test_calc_sell_tax_etf_day_trade_is_not_halved(self):
         """ETF當沖不適用證交稅減半，稅率應跟非當沖的ETF一樣是0.1%。"""
@@ -81,7 +98,13 @@ class TestFees(unittest.TestCase):
         tax_day_trade = calc_sell_tax(price=37, shares=1000, is_etf=True, is_day_trade=True, costs=costs)
         tax_not_day_trade = calc_sell_tax(price=37, shares=1000, is_etf=True, is_day_trade=False, costs=costs)
         self.assertEqual(tax_day_trade, tax_not_day_trade)
-        self.assertEqual(tax_day_trade, round(37 * 1000 * 0.001))
+        self.assertEqual(tax_day_trade, math.floor(37 * 1000 * 0.001))
+
+    def test_calc_sell_tax_truncates_not_rounds(self):
+        """333.5*1000*0.001=333.5剛好卡在無條件捨去跟四捨五入(銀行家捨入法
+        會進位成334)會給出不同結果的臨界點，驗證真的是floor。"""
+        tax = calc_sell_tax(price=333.5, shares=1000, is_etf=True, is_day_trade=False, costs=_costs())
+        self.assertEqual(tax, 333)
 
 
 class TestMatchFifo(unittest.TestCase):

@@ -15,6 +15,7 @@
   也不需要知道`is_etf`/`is_day_trade`這兩個只在成交當下才需要的屬性。
 """
 
+import math
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -41,17 +42,21 @@ TRADING_RULES = _load_trading_rules()
 
 
 def calc_fee(price: float, shares: int, costs: Dict = COSTS) -> float:
-    """買進或賣出的券商手續費，四捨五入到整數元，低於最低手續費時以
-    最低手續費計。"""
+    """買進或賣出的券商手續費，無條件捨去到整數元（元大官網〔3101股票
+    庫存欄位說明〕：「手續費率...皆無條件捨去至整數位」，不是四捨五入），
+    低於最低手續費時以最低手續費計。股數是1000的倍數視為整股（套用
+    min_fee_round_lot），否則視為零股（套用min_fee_odd_lot）。"""
     fee_cfg = costs["brokerage_fee"]
     raw = price * shares * fee_cfg["legal_rate"] * fee_cfg["discount"]
-    return max(round(raw), fee_cfg["min_fee"])
+    min_fee = fee_cfg["min_fee_round_lot"] if shares % 1000 == 0 else fee_cfg["min_fee_odd_lot"]
+    return max(math.floor(raw), min_fee)
 
 
 def calc_sell_tax(price: float, shares: int, is_etf: bool, is_day_trade: bool,
                    costs: Dict = COSTS) -> float:
-    """賣出時的證交稅。判斷順序：is_etf優先（固定etf_rate，當沖也不減半）
-    → 否則看is_day_trade（stock的現股當沖減半）→ 否則一般股票稅率。"""
+    """賣出時的證交稅，無條件捨去到整數元（同calc_fee的捨去方式）。
+    判斷順序：is_etf優先（固定etf_rate，當沖也不減半）→ 否則看
+    is_day_trade（stock的現股當沖減半）→ 否則一般股票稅率。"""
     tax_cfg = costs["securities_tax"]
     if is_etf:
         rate = tax_cfg["etf_rate"]
@@ -59,7 +64,7 @@ def calc_sell_tax(price: float, shares: int, is_etf: bool, is_day_trade: bool,
         rate = tax_cfg["day_trade_rate"]
     else:
         rate = tax_cfg["stock_rate"]
-    return round(price * shares * rate)
+    return math.floor(price * shares * rate)
 
 
 @dataclass
