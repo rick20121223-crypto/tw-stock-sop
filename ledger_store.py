@@ -36,6 +36,8 @@ class Account:
     initial_capital: float = 1_000_000.0
     max_position_pct: float = 0.2  # 單筆部位上限，占「目前帳戶淨值」的比例
     max_holdings_count: int = 10
+    max_loss_pct: float = 0.01  # 單筆最大虧損，占「目前帳戶淨值」的比例，position_sizing.py用來反推股數
+    holding_period_type: str = "短線"  # "短線" 或 "波段"
     created_date: Optional[date] = None
     is_active: bool = True
 
@@ -53,6 +55,8 @@ class Order:
     planned_target: Optional[float] = None
     requested_shares: int = 0
     status: str = "pending"  # pending/filled/deferred/cancelled
+    priority_rank: Optional[int] = None  # 同日訊號數超過空位/現金時，position_sizing.prioritize_candidates()排出的名次
+    priority_reason: str = ""  # 排序依據的文字說明，供事後稽核「為什麼這張單被排擠掉」
     id: str = ""
     created_at: Optional[datetime] = None
 
@@ -119,6 +123,8 @@ def _row_to_account(row: dict) -> Account:
         initial_capital=float(row["initial_capital"]),
         max_position_pct=float(row["max_position_pct"]),
         max_holdings_count=int(row["max_holdings_count"]),
+        max_loss_pct=float(row["max_loss_pct"]) if row.get("max_loss_pct") else 0.01,
+        holding_period_type=row.get("holding_period_type") or "短線",
         created_date=date.fromisoformat(row["created_date"]) if row.get("created_date") else None,
         is_active=row["is_active"] in ("True", "true", "1"),
     )
@@ -137,6 +143,7 @@ def _order_to_row(o: Order) -> dict:
     row["planned_stop_loss"] = "" if o.planned_stop_loss is None else o.planned_stop_loss
     row["planned_target"] = "" if o.planned_target is None else o.planned_target
     row["entry_reason"] = o.entry_reason or ""
+    row["priority_rank"] = "" if o.priority_rank is None else o.priority_rank
     return row
 
 
@@ -154,6 +161,8 @@ def _row_to_order(row: dict) -> Order:
         planned_target=float(row["planned_target"]) if row.get("planned_target") else None,
         requested_shares=int(row["requested_shares"]),
         status=row.get("status", "pending"),
+        priority_rank=int(row["priority_rank"]) if row.get("priority_rank") else None,
+        priority_reason=row.get("priority_reason", ""),
         created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None,
     )
 

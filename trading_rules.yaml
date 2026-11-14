@@ -1,0 +1,25 @@
+# 紙上交易系統規則設定（跨帳戶共用，市場結構/系統政策層級的數字；帳戶個別
+# 風險偏好相關的參數——單檔部位上限/持股檔數上限/單筆最大虧損——放在
+# ledger_store.Account，不在這裡）。
+
+liquidity:
+  min_avg_trade_value_20d: 30000000   # 20日均成交值門檻（新台幣），低於此排除
+
+eligibility:
+  exclude_disposition: true         # 排除處置股
+  exclude_full_delivery: true       # 排除全額交割股
+  exclude_new_listing: true         # 排除上市未滿一定交易日數的新股
+  new_listing_min_trading_days: 60  # 上市未滿此交易日數視為新股（用日曆天數近似，非精確交易日曆）
+
+fill_defer:
+  buy_max_defer_days: 3       # 漲停鎖死，買單最多順延幾個交易日（不含訊號當天），超過就取消
+  sell_max_defer_days: null   # 跌停鎖死，賣單不設上限，順延到賣出為止
+
+priority:
+  sort_key: "avg_trade_value_20d"  # 同日訊號數多於空位/現金時的排序依據
+  descending: true                  # true=數值大者優先
+
+live_trading_gate:
+  min_trade_count: 30         # 放行實單門檻：已平倉交易筆數下限
+  max_drawdown_pct: 0.15      # 放行實單門檻：最大回撤上限（占帳戶淨值比例）
+  require_beat_benchmark: true  # 放行實單門檻：扣成本後報酬是否需優於0050

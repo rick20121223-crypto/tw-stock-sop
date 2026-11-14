@@ -18,6 +18,7 @@ class TestCSVLedgerStore(unittest.TestCase):
     def _account(self, account_id="v1"):
         return Account(account_id=account_id, label="規則版本1", rule_version_tag="sop_rules v1.3",
                        initial_capital=1_000_000.0, max_position_pct=0.2, max_holdings_count=10,
+                       max_loss_pct=0.01, holding_period_type="短線",
                        created_date=date(2026, 11, 14))
 
     def test_add_and_list_accounts(self):
@@ -26,6 +27,8 @@ class TestCSVLedgerStore(unittest.TestCase):
         self.assertEqual(len(accounts), 1)
         self.assertEqual(accounts[0].account_id, "v1")
         self.assertEqual(accounts[0].initial_capital, 1_000_000.0)
+        self.assertEqual(accounts[0].max_loss_pct, 0.01)
+        self.assertEqual(accounts[0].holding_period_type, "短線")
         self.assertEqual(accounts[0].created_date, date(2026, 11, 14))
         self.assertTrue(accounts[0].is_active)
 
@@ -48,7 +51,17 @@ class TestCSVLedgerStore(unittest.TestCase):
         self.assertEqual(orders[0].entry_reason, "買進")
         self.assertEqual(orders[0].planned_stop_loss, 95.0)
         self.assertEqual(orders[0].status, "pending")
+        self.assertIsNone(orders[0].priority_rank)
         self.assertIsNotNone(orders[0].created_at)
+
+    def test_order_priority_rank_roundtrips(self):
+        order = self._order()
+        order.priority_rank = 2
+        order.priority_reason = "20日均成交值排名第2，空位足夠配置"
+        self.store.add_order(order)
+        orders = self.store.list_orders()
+        self.assertEqual(orders[0].priority_rank, 2)
+        self.assertEqual(orders[0].priority_reason, "20日均成交值排名第2，空位足夠配置")
 
     def test_list_orders_filtered_by_account(self):
         self.store.add_order(self._order(account_id="v1"))
