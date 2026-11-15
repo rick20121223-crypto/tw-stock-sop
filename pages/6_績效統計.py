@@ -55,9 +55,11 @@ if not accounts:
     st.stop()
 
 account_by_id = {a.account_id: a for a in accounts}
+# rule_version_tag=="practice"的練習帳戶預設不顯示（不計入任何績效與
+# 放行標準的檢視），要看的話手動從多選裡勾回來。
 selected_ids = st.multiselect(
     "選擇要比較的帳戶", list(account_by_id.keys()),
-    default=list(account_by_id.keys()),
+    default=[i for i, a in account_by_id.items() if a.rule_version_tag != "practice"],
     format_func=lambda i: f"{i}（{account_by_id[i].label}）",
 )
 source_choice = st.radio("來源篩選", ["全部", "只看system單", "只看manual單"], index=1, horizontal=True)
@@ -85,6 +87,8 @@ def _render_account(account_id: str) -> None:
     if account.go_live_date:
         decision_date = _add_months(account.go_live_date, 6)
         st.caption(f"上線日：{account.go_live_date}　決策日（上線日+6個月）：{decision_date}")
+    else:
+        st.caption("尚未上線（上線日未填，6個月觀察期還沒開始倒數）")
 
     fills = store.list_fills(account_id=account_id)
     if not fills:

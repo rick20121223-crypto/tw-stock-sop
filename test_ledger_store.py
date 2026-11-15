@@ -40,9 +40,10 @@ class TestCSVLedgerStore(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.add_account(self._account())
 
-    def test_go_live_date_defaults_to_created_date_when_not_set(self):
+    def test_go_live_date_stays_none_when_not_set(self):
+        """留空=尚未上線，不可以自動補成created_date（引擎上線時才填）。"""
         account = Account(account_id="v2", label="測試", created_date=date(2026, 11, 14))
-        self.assertEqual(account.go_live_date, date(2026, 11, 14))
+        self.assertIsNone(account.go_live_date)
 
     def test_go_live_date_can_differ_from_created_date(self):
         account = Account(account_id="v3", label="測試", created_date=date(2026, 11, 1),
@@ -51,9 +52,16 @@ class TestCSVLedgerStore(unittest.TestCase):
         self.assertEqual(account.created_date, date(2026, 11, 1))
 
     def test_go_live_date_roundtrips_through_csv(self):
-        self.store.add_account(self._account())
+        account_in = self._account()
+        account_in.go_live_date = date(2026, 11, 20)
+        self.store.add_account(account_in)
         [account] = self.store.list_accounts()
-        self.assertEqual(account.go_live_date, date(2026, 11, 14))
+        self.assertEqual(account.go_live_date, date(2026, 11, 20))
+
+    def test_empty_go_live_date_roundtrips_as_none(self):
+        self.store.add_account(self._account())  # 沒填go_live_date
+        [account] = self.store.list_accounts()
+        self.assertIsNone(account.go_live_date)
 
     def _order(self, account_id="v1", code="2330", side="買"):
         return Order(account_id=account_id, code=code, side=side, source="system",

@@ -87,8 +87,12 @@ with st.expander("➕ 新增帳戶", expanded=not accounts):
                 "單筆最大虧損（占目前帳戶淨值）", 0.001, 0.10, _ACCOUNT_FIELD_DEFAULTS["max_loss_pct"],
                 format="%.3f",
             )
+            new_go_live_unset = st.checkbox(
+                "上線日先留空（尚未上線，之後引擎上線時再填）", value=True,
+            )
             new_go_live_date = st.date_input(
-                "上線日（績效頁以此起算6個月觀察期，預設=今天）", value=date.today(),
+                "上線日（績效頁以此起算6個月觀察期；上面有勾留空就不會使用這個值）",
+                value=date.today(),
             )
         if st.form_submit_button("新增帳戶"):
             if not new_account_id or not new_label:
@@ -100,7 +104,8 @@ with st.expander("➕ 新增帳戶", expanded=not accounts):
                         rule_version_tag=new_rule_tag, initial_capital=new_capital,
                         max_position_pct=new_max_pct, max_holdings_count=int(new_max_holdings),
                         max_loss_pct=new_max_loss_pct, holding_period_type=new_holding_period,
-                        created_date=date.today(), go_live_date=new_go_live_date,
+                        created_date=date.today(),
+                        go_live_date=None if new_go_live_unset else new_go_live_date,
                     ))
                     st.success("已新增帳戶")
                     st.rerun()

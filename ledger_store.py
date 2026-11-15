@@ -53,11 +53,7 @@ class Account:
     holding_period_type: str = "短線"  # "短線" 或 "波段"
     created_date: Optional[date] = None
     is_active: bool = True
-    go_live_date: Optional[date] = None  # 正式開始算6個月放行觀察期的起點；沒填就等於created_date（見__post_init__）。放最後面是遵守模組docstring的欄位順序規則
-
-    def __post_init__(self):
-        if self.go_live_date is None:
-            self.go_live_date = self.created_date
+    go_live_date: Optional[date] = None  # 正式開始算6個月放行觀察期的起點；留空=尚未上線（引擎上線時才填，不自動補值）。放最後面是遵守模組docstring的欄位順序規則
 
 
 @dataclass
