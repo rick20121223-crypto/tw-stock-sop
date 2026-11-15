@@ -114,6 +114,41 @@ def fetch_adjusted_daily(code: str, market: str, start_date: str, end_date: str,
     return apply_back_adjustment(df_raw, events)
 
 
+def apply_total_return_adjustment(df_raw: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+    """跟apply_back_adjustment()用同一組除權息比例資料(ratio=after_price/
+    before_price)，但方向相反：不是把「事件日之前」的價格往下乘ratio還原，
+    是把「事件日(含)之後」的價格往上乘1/ratio，模擬股利有重新投入、不會
+    因為除權息而讓價格序列出現向下的缺口。多個事件連乘，用於跟0050這類
+    ETF對照時的「含息報酬率」計算（見fetch_total_return_daily），不用於
+    個股本身的訊號判斷（訊號判斷要用apply_back_adjustment()的還原股價）。"""
+    df = df_raw.copy()
+    if df.empty:
+        return df
+    dates = pd.to_datetime(df["date"])
+    factor = pd.Series(1.0, index=df.index)
+    for _, ev in events.iterrows():
+        ev_date = pd.Timestamp(ev["date"])
+        mask = dates >= ev_date
+        factor.loc[mask] *= 1.0 / ev["ratio"]
+    for col in ("open", "max", "min", "close"):
+        if col in df.columns:
+            df[col] = df[col] * factor
+    df["total_return_factor"] = factor
+    return df
+
+
+def fetch_total_return_daily(code: str, market: str, start_date: str, end_date: str,
+                              api_token: str = "") -> pd.DataFrame:
+    """含息（總報酬）日線：只用於跟0050等ETF對照績效時的報酬率計算，不是
+    個股訊號判斷用的還原股價（那是fetch_adjusted_daily()）。
+    market!="TW"時沒有除權息事件，直接回傳未還原資料。"""
+    df_raw = fetch_raw_daily(code, market, start_date, end_date, api_token)
+    if df_raw.empty or market != "TW":
+        return df_raw
+    events = fetch_dividend_events(code, start_date, end_date, api_token)
+    return apply_total_return_adjustment(df_raw, events)
+
+
 def detect_price_gaps(df_adj: pd.DataFrame, threshold: float = 0.20) -> pd.DataFrame:
     """粗略抓「還原後仍有單日跳空」的日子（例如減資造成、但
     TaiwanStockDividendResult沒有涵蓋的價格斷層），回傳供報告列限制用，

@@ -23,6 +23,13 @@ TDCC「持股分級」欄位是數字代碼（1~17），不是級距文字，代
     fetch_major_holder_trend()  從本地歷史檔讀出某檔股票的週趨勢
     compute_consecutive_signals()  算週對週diff/方向/連續N週同向訊號
     align_to_trading_days()     週頻資料對齊到K線的最近一個交易日
+
+2026-11-14：另外新增百張大戶(>100張，累計含千張/400張大戶)、千張大戶
+(>1000張)兩組獨立歷史檔與對應的 archive_*/fetch_*_trend 函式，用法跟
+上面三個主要函式一樣，只是改讀/寫各自的檔案。原本的>400張大戶（
+archive_tdcc_snapshot/fetch_major_holder_trend）維持不變，避免影響既有
+呼叫端（notify_email.py、pages/_4_個股詳細分析.py、pages/3_多週期整合
+分析.py）。從這次新增之後才開始累積歷史，剛加入的前幾週資料會不足。
 """
 
 from datetime import date as date_cls
@@ -45,9 +52,16 @@ TDCC_HOLDING_URL = "https://openapi.tdcc.com.tw/v1/opendata/1-5"
 # 「大股東(>400張)」= >400,000股，第11級距上限剛好400,000股不算，
 # 從第12級距（400,001股）開始才算，所以是 12~15 加總。
 MAJOR_HOLDER_LEVELS = {12, 13, 14, 15}
+# 「百張大戶(>100張)」= >100,000股，第9級距上限剛好100,000股不算，
+# 從第10級距（100,001股）開始，累計到最高級距（含400張、千張大戶）。
+HUNDRED_LOT_LEVELS = {10, 11, 12, 13, 14, 15}
+# 「千張大戶(>1000張)」= >1,000,000股，只有第15級距（1,000,001股以上）。
+THOUSAND_LOT_LEVELS = {15}
 
 DATA_DIR = Path(__file__).parent / "data"
 TDCC_ARCHIVE_FILE = DATA_DIR / "tdcc_holding_major_holder.csv"
+TDCC_HUNDRED_LOT_FILE = DATA_DIR / "tdcc_holding_hundred_lot.csv"
+TDCC_THOUSAND_LOT_FILE = DATA_DIR / "tdcc_holding_thousand_lot.csv"
 RETENTION_WEEKS = 60  # 保留約14個月歷史，跟「連續N週」的實用需求打平衡，避免檔案無限long
 
 
@@ -92,38 +106,36 @@ def fetch_tdcc_snapshot() -> pd.DataFrame:
     return df
 
 
-def _aggregate_major_holders(snapshot: pd.DataFrame) -> pd.DataFrame:
-    """把全市場快照篩到>400張的級距(12~15)，依股票代碼加總，回傳
+def _aggregate_by_levels(snapshot: pd.DataFrame, levels: set) -> pd.DataFrame:
+    """把全市場快照篩到指定的持股分級集合，依股票代碼加總，回傳
     date/stock_id/percent/people/unit（每檔股票一列）。"""
     if snapshot.empty:
         return pd.DataFrame(columns=["date", "stock_id", "percent", "people", "unit"])
-    major = snapshot[snapshot["level"].isin(MAJOR_HOLDER_LEVELS)]
+    filtered = snapshot[snapshot["level"].isin(levels)]
     return (
-        major.groupby(["date", "stock_id"], as_index=False)
+        filtered.groupby(["date", "stock_id"], as_index=False)
         .agg(percent=("percent", "sum"), people=("people", "sum"), unit=("unit", "sum"))
     )
 
 
-def archive_tdcc_snapshot() -> Optional[str]:
-    """
-    抓最新一週的TDCC股權分散表、篩>400張級距、依股票加總，append進本地
-    歷史檔（同一個資料日期只會存一次，重複執行不會重複累加）。
-    回傳這次存檔的資料日期字串（YYYY-MM-DD），沒有新資料、抓取失敗、
-    或這週已經存過了，都回傳 None。
-    """
-    snapshot = fetch_tdcc_snapshot()
-    if snapshot.empty:
-        return None
+def _aggregate_major_holders(snapshot: pd.DataFrame) -> pd.DataFrame:
+    """把全市場快照篩到>400張的級距(12~15)，依股票代碼加總，回傳
+    date/stock_id/percent/people/unit（每檔股票一列）。"""
+    return _aggregate_by_levels(snapshot, MAJOR_HOLDER_LEVELS)
 
-    aggregated = _aggregate_major_holders(snapshot)
+
+def _archive_aggregated(aggregated: pd.DataFrame, archive_file: Path) -> Optional[str]:
+    """把已依級距加總好的單週資料append進指定的本地歷史檔（同一個資料
+    日期只會存一次，重複執行不會重複累加）。回傳這次存檔的資料日期字串
+    （YYYY-MM-DD），沒有新資料或這週已經存過了，都回傳 None。"""
     if aggregated.empty:
         return None
 
     new_date = aggregated["date"].iloc[0]
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if TDCC_ARCHIVE_FILE.exists():
-        existing = pd.read_csv(TDCC_ARCHIVE_FILE, parse_dates=["date"])
+    if archive_file.exists():
+        existing = pd.read_csv(archive_file, parse_dates=["date"])
         if (existing["date"] == new_date).any():
             return None  # 這週的資料已經存過了，不重複寫入
         combined = pd.concat([existing, aggregated], ignore_index=True)
@@ -133,22 +145,54 @@ def archive_tdcc_snapshot() -> Optional[str]:
     cutoff = pd.Timestamp(date_cls.today()) - pd.Timedelta(weeks=RETENTION_WEEKS)
     combined = combined[combined["date"] >= cutoff]
     combined = combined.sort_values(["date", "stock_id"]).reset_index(drop=True)
-    combined.to_csv(TDCC_ARCHIVE_FILE, index=False)
+    combined.to_csv(archive_file, index=False)
     return new_date.strftime("%Y-%m-%d")
 
 
-def fetch_major_holder_trend(stock_id: str) -> pd.DataFrame:
+def archive_tdcc_snapshot(snapshot: Optional[pd.DataFrame] = None) -> Optional[str]:
     """
-    回傳「大股東（>400張）合計持股比例」週趨勢，從本地歷史檔讀取（不再
-    即時呼叫遠端API），欄位：date、percent、people、unit。歷史是靠每週
-    排程執行 archive_tdcc_snapshot() 累積的，資料不足（檔案不存在、或
-    這檔股票還沒被存過幾週）就回傳空/筆數少的 DataFrame，呼叫端據此
-    判斷「還在累積中」即可，不用特別接例外。
+    抓最新一週的TDCC股權分散表、篩>400張級距、依股票加總，append進本地
+    歷史檔。可傳入已經抓好的 snapshot 避免重複呼叫遠端API（例如跟百張/
+    千張大戶一起存檔時），省略則自己抓一次。
+    回傳這次存檔的資料日期字串（YYYY-MM-DD），沒有新資料、抓取失敗、
+    或這週已經存過了，都回傳 None。
     """
-    if not TDCC_ARCHIVE_FILE.exists():
+    if snapshot is None:
+        snapshot = fetch_tdcc_snapshot()
+    if snapshot.empty:
+        return None
+    return _archive_aggregated(_aggregate_major_holders(snapshot), TDCC_ARCHIVE_FILE)
+
+
+def archive_hundred_lot_snapshot(snapshot: Optional[pd.DataFrame] = None) -> Optional[str]:
+    """跟 archive_tdcc_snapshot() 一樣，但篩的是>100張級距(10~15)、存進
+    TDCC_HUNDRED_LOT_FILE。"""
+    if snapshot is None:
+        snapshot = fetch_tdcc_snapshot()
+    if snapshot.empty:
+        return None
+    return _archive_aggregated(_aggregate_by_levels(snapshot, HUNDRED_LOT_LEVELS), TDCC_HUNDRED_LOT_FILE)
+
+
+def archive_thousand_lot_snapshot(snapshot: Optional[pd.DataFrame] = None) -> Optional[str]:
+    """跟 archive_tdcc_snapshot() 一樣，但篩的是>1000張級距(15)、存進
+    TDCC_THOUSAND_LOT_FILE。"""
+    if snapshot is None:
+        snapshot = fetch_tdcc_snapshot()
+    if snapshot.empty:
+        return None
+    return _archive_aggregated(_aggregate_by_levels(snapshot, THOUSAND_LOT_LEVELS), TDCC_THOUSAND_LOT_FILE)
+
+
+def _fetch_trend_from_file(stock_id: str, archive_file: Path) -> pd.DataFrame:
+    """從指定的本地歷史檔讀出某檔股票的週趨勢，欄位：date、percent、
+    people、unit。歷史是靠每週排程執行對應的 archive_*_snapshot() 累積
+    的，資料不足（檔案不存在、或這檔股票還沒被存過幾週）就回傳空/筆數
+    少的 DataFrame，呼叫端據此判斷「還在累積中」即可，不用特別接例外。"""
+    if not archive_file.exists():
         return pd.DataFrame(columns=["date", "percent", "people", "unit"])
 
-    history = pd.read_csv(TDCC_ARCHIVE_FILE, parse_dates=["date"])
+    history = pd.read_csv(archive_file, parse_dates=["date"])
     history["stock_id"] = history["stock_id"].astype(str)
     matched = history[history["stock_id"] == str(stock_id).strip()]
     return (
@@ -156,6 +200,26 @@ def fetch_major_holder_trend(stock_id: str) -> pd.DataFrame:
         .sort_values("date")
         .reset_index(drop=True)
     )
+
+
+def fetch_major_holder_trend(stock_id: str) -> pd.DataFrame:
+    """回傳「大股東（>400張）合計持股比例」週趨勢，從本地歷史檔讀取（不
+    即時呼叫遠端API）。歷史是靠每週排程執行 archive_tdcc_snapshot() 累積
+    的，資料不足時回傳空/筆數少的 DataFrame，呼叫端據此判斷「還在累積
+    中」即可。"""
+    return _fetch_trend_from_file(stock_id, TDCC_ARCHIVE_FILE)
+
+
+def fetch_hundred_lot_trend(stock_id: str) -> pd.DataFrame:
+    """回傳「百張大戶（>100張，累計含千張/400張大戶）合計持股比例」週
+    趨勢，從本地歷史檔讀取，用法同 fetch_major_holder_trend()。"""
+    return _fetch_trend_from_file(stock_id, TDCC_HUNDRED_LOT_FILE)
+
+
+def fetch_thousand_lot_trend(stock_id: str) -> pd.DataFrame:
+    """回傳「千張大戶（>1000張）合計持股比例」週趨勢，從本地歷史檔
+    讀取，用法同 fetch_major_holder_trend()。"""
+    return _fetch_trend_from_file(stock_id, TDCC_THOUSAND_LOT_FILE)
 
 
 def compute_consecutive_signals(df_holding: pd.DataFrame, n: int = 3) -> pd.DataFrame:
@@ -228,5 +292,12 @@ def align_to_trading_days(df_weekly: pd.DataFrame, daily_df: pd.DataFrame) -> pd
 
 
 if __name__ == "__main__":
-    saved_date = archive_tdcc_snapshot()
-    print(f"已存TDCC股權分散表快照：{saved_date}" if saved_date else "沒有新的一週資料（可能這週已經存過，或抓取失敗）")
+    weekly_snapshot = fetch_tdcc_snapshot()
+    archives = {
+        ">400張大戶": archive_tdcc_snapshot(weekly_snapshot),
+        ">100張大戶": archive_hundred_lot_snapshot(weekly_snapshot),
+        ">1000張大戶": archive_thousand_lot_snapshot(weekly_snapshot),
+    }
+    for label, saved_date in archives.items():
+        print(f"已存TDCC股權分散表快照（{label}）：{saved_date}" if saved_date
+              else f"沒有新的一週資料（{label}，可能這週已經存過，或抓取失敗）")

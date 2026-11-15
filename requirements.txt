@@ -5,3 +5,5 @@ pandas
 fugle-marketdata
 PyYAML
 youtube-transcript-api
+gspread
+google-auth

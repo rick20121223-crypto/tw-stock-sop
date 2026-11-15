@@ -19,6 +19,8 @@ pages = [
     st.Page("home.py", title="長線留倉", icon="📅", default=True),
     st.Page("pages/1_短線進場.py", title="短線進場", icon="⚡"),
     st.Page("pages/3_多週期整合分析.py", title="多週期整合分析", icon="🔍"),
+    st.Page("pages/5_交易日誌.py", title="交易日誌", icon="📝"),
+    st.Page("pages/6_績效統計.py", title="績效統計", icon="📊"),
 ]
 
 pg = st.navigation(pages)
