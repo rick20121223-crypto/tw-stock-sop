@@ -103,6 +103,19 @@ def require_pin() -> bool:
     return False
 
 
+def _s(value) -> str:
+    """強制轉成字串。CSV讀出來本來就是str，這裡是no-op；但
+    GoogleSheetsLedgerStore的gspread.get_all_records()會把「看起來像純
+    數字」的儲存格值自動讀成int/float（即使寫入時是字串、且用了
+    value_input_option="RAW"——這是gspread讀取端自己的型別推斷，不受
+    寫入選項影響），純數字股票代號（如"2330"）會因此被讀成int、但
+    有前導零的代號（如"0050"）不會，同一個欄位在不同值上型別不一致，
+    會讓下游用(account_id, code)當key分組的邏輯(performance.py的
+    _group_by_account_code)把同一支股票誤判成不同股票。所有從row dict
+    取出、dataclass宣告是str的欄位，一律套用這個函式再放進dataclass。"""
+    return "" if value is None else str(value)
+
+
 def _write_csv(path: Path, fieldnames: List[str], rows: List[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as f:
@@ -134,17 +147,17 @@ def _account_to_row(a: Account) -> dict:
 
 def _row_to_account(row: dict) -> Account:
     return Account(
-        account_id=row["account_id"],
-        label=row["label"],
-        rule_version_tag=row.get("rule_version_tag", ""),
+        account_id=_s(row["account_id"]),
+        label=_s(row["label"]),
+        rule_version_tag=_s(row.get("rule_version_tag", "")),
         initial_capital=float(row["initial_capital"]),
         max_position_pct=float(row["max_position_pct"]),
         max_holdings_count=int(row["max_holdings_count"]),
         max_loss_pct=float(row["max_loss_pct"]) if row.get("max_loss_pct") else 0.01,
-        holding_period_type=row.get("holding_period_type") or "短線",
-        created_date=date.fromisoformat(row["created_date"]) if row.get("created_date") else None,
-        go_live_date=date.fromisoformat(row["go_live_date"]) if row.get("go_live_date") else None,
-        is_active=row["is_active"] in ("True", "true", "1"),
+        holding_period_type=_s(row.get("holding_period_type")) or "短線",
+        created_date=date.fromisoformat(_s(row["created_date"])) if row.get("created_date") else None,
+        go_live_date=date.fromisoformat(_s(row["go_live_date"])) if row.get("go_live_date") else None,
+        is_active=_s(row["is_active"]) in ("True", "true", "1"),
     )
 
 
@@ -167,22 +180,22 @@ def _order_to_row(o: Order) -> dict:
 
 def _row_to_order(row: dict) -> Order:
     return Order(
-        id=row["id"],
-        account_id=row["account_id"],
-        code=row["code"],
-        side=row["side"],
-        source=row.get("source", "system"),
-        signal_date=date.fromisoformat(row["signal_date"]) if row.get("signal_date") else None,
-        entry_reason=row["entry_reason"] or None,
-        entry_reason_detail=row.get("entry_reason_detail", ""),
+        id=_s(row["id"]),
+        account_id=_s(row["account_id"]),
+        code=_s(row["code"]),
+        side=_s(row["side"]),
+        source=_s(row.get("source", "system")),
+        signal_date=date.fromisoformat(_s(row["signal_date"])) if row.get("signal_date") else None,
+        entry_reason=_s(row["entry_reason"]) or None,
+        entry_reason_detail=_s(row.get("entry_reason_detail", "")),
         planned_stop_loss=float(row["planned_stop_loss"]) if row.get("planned_stop_loss") else None,
         planned_target=float(row["planned_target"]) if row.get("planned_target") else None,
         requested_shares=int(row["requested_shares"]),
-        status=row.get("status", "pending"),
+        status=_s(row.get("status", "pending")),
         priority_rank=int(row["priority_rank"]) if row.get("priority_rank") else None,
-        priority_reason=row.get("priority_reason", ""),
-        universe_version=row.get("universe_version", ""),
-        created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None,
+        priority_reason=_s(row.get("priority_reason", "")),
+        universe_version=_s(row.get("universe_version", "")),
+        created_at=datetime.fromisoformat(_s(row["created_at"])) if row.get("created_at") else None,
     )
 
 
@@ -202,22 +215,22 @@ def _fill_to_row(f: Fill) -> dict:
 
 def _row_to_fill(row: dict) -> Fill:
     return Fill(
-        id=row["id"],
-        account_id=row["account_id"],
-        code=row["code"],
-        side=row["side"],
+        id=_s(row["id"]),
+        account_id=_s(row["account_id"]),
+        code=_s(row["code"]),
+        side=_s(row["side"]),
         price=float(row["price"]),
         shares=int(row["shares"]),
-        fill_date=date.fromisoformat(row["fill_date"]),
+        fill_date=date.fromisoformat(_s(row["fill_date"])),
         fee=float(row["fee"]),
         tax=float(row["tax"]) if row.get("tax") else 0.0,
-        is_day_trade=row["is_day_trade"] in ("True", "true", "1"),
-        source=row.get("source", "system"),
+        is_day_trade=_s(row["is_day_trade"]) in ("True", "true", "1"),
+        source=_s(row.get("source", "system")),
         planned_stop_loss=float(row["planned_stop_loss"]) if row.get("planned_stop_loss") else None,
-        exit_reason=row.get("exit_reason", ""),
-        universe_version=row.get("universe_version", ""),
-        order_id=row.get("order_id", ""),
-        created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None,
+        exit_reason=_s(row.get("exit_reason", "")),
+        universe_version=_s(row.get("universe_version", "")),
+        order_id=_s(row.get("order_id", "")),
+        created_at=datetime.fromisoformat(_s(row["created_at"])) if row.get("created_at") else None,
     )
 
 
@@ -235,8 +248,8 @@ def _daily_equity_to_row(d: DailyEquity) -> dict:
 
 def _row_to_daily_equity(row: dict) -> DailyEquity:
     return DailyEquity(
-        account_id=row["account_id"],
-        equity_date=date.fromisoformat(row["equity_date"]),
+        account_id=_s(row["account_id"]),
+        equity_date=date.fromisoformat(_s(row["equity_date"])),
         cash=float(row["cash"]),
         positions_value=float(row["positions_value"]),
         total_equity=float(row["total_equity"]),
@@ -260,14 +273,14 @@ def _corporate_action_to_row(a: CorporateAction) -> dict:
 
 def _row_to_corporate_action(row: dict) -> CorporateAction:
     return CorporateAction(
-        id=row["id"],
-        account_id=row["account_id"],
-        code=row["code"],
-        ex_date=date.fromisoformat(row["ex_date"]),
+        id=_s(row["id"]),
+        account_id=_s(row["account_id"]),
+        code=_s(row["code"]),
+        ex_date=date.fromisoformat(_s(row["ex_date"])),
         cash_per_share=float(row["cash_per_share"]) if row.get("cash_per_share") else 0.0,
         stock_dividend_ratio=float(row["stock_dividend_ratio"]) if row.get("stock_dividend_ratio") else 0.0,
-        source=row.get("source", "system"),
-        created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None,
+        source=_s(row.get("source", "system")),
+        created_at=datetime.fromisoformat(_s(row["created_at"])) if row.get("created_at") else None,
     )
 
 

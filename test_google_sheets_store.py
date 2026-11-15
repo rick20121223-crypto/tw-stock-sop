@@ -13,6 +13,22 @@ from google_sheets_store import (
 )
 
 
+def _numericise(value):
+    """模擬真實gspread.get_all_records()的型別推斷行為（2026-11-15實測
+    查核）：純數字、不帶前導零的字串會被轉成int，即使實際儲存格內容是
+    字串、寫入時也用了value_input_option="RAW"——這個轉換發生在gspread
+    讀取後的後處理，不受寫入選項影響。帶前導零的字串（如"0050"）不會
+    被轉換。假物件如果不模擬這個行為，測試就抓不到ledger_store.py的
+    _row_to_*()忘記把這類欄位轉回str的bug（曾經真的發生過：純數字股票
+    代號被讀成int，導致FIFO配對用(account_id, code)分組時誤判成不同
+    股票）。"""
+    if isinstance(value, str) and value:
+        digits = value.lstrip("-")
+        if digits.isdigit() and (digits == "0" or not digits.startswith("0")):
+            return int(value)
+    return value
+
+
 class _FakeWorksheet:
     def __init__(self, title):
         self.title = title
@@ -36,7 +52,7 @@ class _FakeWorksheet:
         if not self.rows:
             return []
         header = self.rows[0]
-        return [dict(zip(header, row)) for row in self.rows[1:]]
+        return [dict(zip(header, [_numericise(v) for v in row])) for row in self.rows[1:]]
 
     def append_row(self, values, value_input_option=None):
         self.append_row_calls += 1
@@ -250,6 +266,26 @@ class TestFillsCrud(_GoogleSheetsStoreTestCase):
         [pos] = store.list_positions()
         self.assertEqual(pos.code, "2330")
         self.assertEqual(pos.shares, 1000)
+
+    def test_pure_numeric_code_reads_back_as_str_not_int(self):
+        """迴歸測試：真實gspread.get_all_records()會把"2330"這種不帶
+        前導零的純數字字串讀成int，即使寫入時是字串、也用了RAW選項
+        （2026-11-15實測查核發現，見_numericise()說明）。code若沒被
+        正確轉回str，(account_id, code)分組會把同一支股票誤判成不同
+        股票，FIFO配對/績效計算會算錯。"""
+        store = self._make_store()
+        store.add_fill(self._fill(code="2330"))
+        [fill] = store.list_fills()
+        self.assertIsInstance(fill.code, str)
+        self.assertEqual(fill.code, "2330")
+
+    def test_leading_zero_code_unaffected(self):
+        """帶前導零的代號（如ETF 0050）本來就不會被gspread誤轉，確認
+        這條路徑原本就正確、這次的修正沒有造成回歸。"""
+        store = self._make_store()
+        store.add_fill(self._fill(code="0050"))
+        [fill] = store.list_fills()
+        self.assertEqual(fill.code, "0050")
 
 
 class TestFillIdempotency(_GoogleSheetsStoreTestCase):
