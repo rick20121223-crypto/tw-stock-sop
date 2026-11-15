@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from ledger_store import Account, CSVLedgerStore, Order, get_ledger_store
+from ledger_store import Account, CSVLedgerStore, Order, get_ledger_store, require_pin
 from performance import CorporateAction, DailyEquity, Fill
 
 
@@ -179,6 +179,50 @@ class TestCSVLedgerStore(unittest.TestCase):
         self.store.add_corporate_action(self._corporate_action())
         [pos] = self.store.list_positions()
         self.assertEqual(pos.shares, 1100)
+
+
+class TestRequirePin(unittest.TestCase):
+    def test_locked_when_pin_not_configured(self):
+        """fail closed：沒設定JOURNAL_PIN時回傳False鎖住整頁，不是放行。"""
+        with patch("ledger_store.get_secret", return_value=""), \
+             patch("ledger_store.st") as mock_st:
+            result = require_pin()
+        self.assertFalse(result)
+        mock_st.error.assert_called_once()
+
+    def test_locked_when_wrong_pin_entered(self):
+        with patch("ledger_store.get_secret", return_value="1234"), \
+             patch("ledger_store.st") as mock_st:
+            mock_st.session_state = {}
+            mock_st.text_input.return_value = "9999"
+            result = require_pin()
+        self.assertFalse(result)
+
+    def test_unlocked_when_correct_pin_entered(self):
+        with patch("ledger_store.get_secret", return_value="1234"), \
+             patch("ledger_store.st") as mock_st:
+            mock_st.session_state = {}
+            mock_st.text_input.return_value = "1234"
+            result = require_pin()
+        self.assertTrue(result)
+        self.assertTrue(mock_st.session_state["journal_unlocked"])
+
+    def test_stays_unlocked_once_session_state_set(self):
+        with patch("ledger_store.get_secret", return_value="1234"), \
+             patch("ledger_store.st") as mock_st:
+            mock_st.session_state = {"journal_unlocked": True}
+            result = require_pin()
+        self.assertTrue(result)
+
+    def test_empty_input_locked_without_error_message(self):
+        """還沒輸入任何字（空字串）時不該顯示「PIN錯誤」，只是單純鎖住。"""
+        with patch("ledger_store.get_secret", return_value="1234"), \
+             patch("ledger_store.st") as mock_st:
+            mock_st.session_state = {}
+            mock_st.text_input.return_value = ""
+            result = require_pin()
+        self.assertFalse(result)
+        mock_st.error.assert_not_called()
 
 
 class TestGetLedgerStore(unittest.TestCase):

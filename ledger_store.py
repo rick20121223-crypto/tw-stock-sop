@@ -85,11 +85,12 @@ def get_secret(key: str) -> str:
 def require_pin() -> bool:
     """在頁面最上方呼叫。PIN正確才回傳True；False時呼叫端應立刻讓頁面
     stop()，不要往下執行任何交易資料的讀寫/顯示。沒設定JOURNAL_PIN時
-    視為尚未啟用保護，直接放行（但會在側邊欄警告）。"""
+    fail closed——直接鎖住整頁（回傳False），不是放行，避免忘記設定PIN
+    時交易資料對任何打開這個網址的人都公開可寫/可讀。"""
     configured_pin = get_secret("JOURNAL_PIN")
     if not configured_pin:
-        st.sidebar.warning("尚未設定 JOURNAL_PIN，此頁目前無存取保護。")
-        return True
+        st.error("尚未設定 JOURNAL_PIN，此頁已鎖定。請在 secrets 設定 JOURNAL_PIN 後才能使用。")
+        return False
     if st.session_state.get("journal_unlocked"):
         return True
     entered = st.text_input("請輸入存取 PIN", type="password", key="journal_pin_input")
