@@ -4,7 +4,9 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from ledger_store import Account, CSVLedgerStore, Order, get_ledger_store, require_pin
+from dataclasses import fields
+
+from ledger_store import _ACCOUNT_DEFAULTS, Account, CSVLedgerStore, Order, get_ledger_store, require_pin
 from performance import CorporateAction, DailyEquity, Fill
 
 
@@ -179,6 +181,24 @@ class TestCSVLedgerStore(unittest.TestCase):
         self.store.add_corporate_action(self._corporate_action())
         [pos] = self.store.list_positions()
         self.assertEqual(pos.shares, 1100)
+
+
+class TestAccountDefaultsSingleSource(unittest.TestCase):
+    """單檔部位上限/持股檔數上限/單筆最大虧損的預設值唯一來源是
+    trading_rules.yaml的account_defaults區塊，Account的dataclass欄位
+    預設值要直接讀那裡，不是各自寫死的字面值。"""
+
+    def test_account_field_defaults_come_from_trading_rules_yaml(self):
+        field_defaults = {f.name: f.default for f in fields(Account)}
+        self.assertEqual(field_defaults["max_position_pct"], _ACCOUNT_DEFAULTS["max_position_pct"])
+        self.assertEqual(field_defaults["max_holdings_count"], _ACCOUNT_DEFAULTS["max_holdings_count"])
+        self.assertEqual(field_defaults["max_loss_pct"], _ACCOUNT_DEFAULTS["max_loss_pct"])
+
+    def test_account_defaults_match_specified_rules(self):
+        """目前trading_rules.yaml裡應該是：單檔10%、持股8檔、單筆最大虧損1%。"""
+        self.assertAlmostEqual(_ACCOUNT_DEFAULTS["max_position_pct"], 0.10)
+        self.assertEqual(_ACCOUNT_DEFAULTS["max_holdings_count"], 8)
+        self.assertAlmostEqual(_ACCOUNT_DEFAULTS["max_loss_pct"], 0.01)
 
 
 class TestRequirePin(unittest.TestCase):

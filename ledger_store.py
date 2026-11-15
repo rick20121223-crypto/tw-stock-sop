@@ -31,9 +31,14 @@ from uuid import uuid4
 
 import streamlit as st
 
-from performance import CorporateAction, DailyEquity, Fill, Position, compute_positions
+from performance import TRADING_RULES, CorporateAction, DailyEquity, Fill, Position, compute_positions
 
 DATA_DIR = Path(__file__).parent / "data" / "paper_trading"
+
+# 帳戶風險偏好參數的預設值唯一來源：trading_rules.yaml的account_defaults
+# 區塊。Account的dataclass欄位預設值、pages/5_交易日誌.py的表單預設值都
+# 從這裡讀，不要各自寫死（見trading_rules.yaml該區塊的註解）。
+_ACCOUNT_DEFAULTS = TRADING_RULES.get("account_defaults", {})
 
 
 @dataclass
@@ -42,9 +47,9 @@ class Account:
     label: str
     rule_version_tag: str = ""
     initial_capital: float = 1_000_000.0
-    max_position_pct: float = 0.2  # 單筆部位上限，占「目前帳戶淨值」的比例
-    max_holdings_count: int = 10
-    max_loss_pct: float = 0.01  # 單筆最大虧損，占「目前帳戶淨值」的比例，position_sizing.py用來反推股數
+    max_position_pct: float = _ACCOUNT_DEFAULTS.get("max_position_pct", 0.10)  # 單檔部位上限，占「目前帳戶淨值」的比例
+    max_holdings_count: int = _ACCOUNT_DEFAULTS.get("max_holdings_count", 8)
+    max_loss_pct: float = _ACCOUNT_DEFAULTS.get("max_loss_pct", 0.01)  # 單筆最大虧損，占「目前帳戶淨值」的比例，position_sizing.py用來反推股數
     holding_period_type: str = "短線"  # "短線" 或 "波段"
     created_date: Optional[date] = None
     is_active: bool = True

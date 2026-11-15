@@ -1,6 +1,13 @@
-# 紙上交易系統規則設定（跨帳戶共用，市場結構/系統政策層級的數字；帳戶個別
-# 風險偏好相關的參數——單檔部位上限/持股檔數上限/單筆最大虧損——放在
-# ledger_store.Account，不在這裡）。
+# 紙上交易系統規則設定（跨帳戶共用，市場結構/系統政策層級的數字）。
+
+account_defaults:
+  # 帳戶個別風險偏好參數（ledger_store.Account的預設值）的單一來源。
+  # 新建帳戶時可以個別調整，這裡只決定「沒特別調整時」的初始值；
+  # ledger_store.Account的dataclass欄位預設值、pages/5_交易日誌.py的
+  # 表單預設值都從這裡讀，不要各自寫死。
+  max_position_pct: 0.10      # 單檔部位上限，占目前帳戶淨值的比例
+  max_holdings_count: 8       # 持股檔數上限
+  max_loss_pct: 0.01          # 單筆最大虧損，占目前帳戶淨值的比例
 
 stock_pool:
   type: fixed_list           # fixed_list | index_constituents | liquidity_topn

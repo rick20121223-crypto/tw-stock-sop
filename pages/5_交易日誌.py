@@ -13,6 +13,7 @@
 執行方式：streamlit run streamlit_app.py
 """
 
+from dataclasses import fields
 from datetime import date
 
 import pandas as pd
@@ -20,6 +21,10 @@ import streamlit as st
 
 from ledger_store import Account, Order, get_ledger_store, require_pin
 from performance import Fill, calc_fee, calc_sell_tax
+
+# 表單預設值直接讀Account的dataclass欄位預設（唯一來源是trading_rules.yaml
+# 的account_defaults區塊，見ledger_store.py），不在這裡另外寫死一份數字。
+_ACCOUNT_FIELD_DEFAULTS = {f.name: f.default for f in fields(Account)}
 
 st.set_page_config(page_title="交易日誌", layout="wide", page_icon="📝")
 
@@ -67,12 +72,21 @@ with st.expander("➕ 新增帳戶", expanded=not accounts):
             new_label = st.text_input("名稱")
             new_rule_tag = st.text_input("規則版本標籤（例如 sop_rules v1.3）")
         with col2:
-            new_capital = st.number_input("初始本金", min_value=0.0, value=1_000_000.0, step=10_000.0)
-            new_max_pct = st.slider("單筆部位上限（占目前帳戶淨值）", 0.01, 1.0, 0.2)
-            new_max_holdings = st.number_input("持股檔數上限", min_value=1, value=10, step=1)
+            new_capital = st.number_input(
+                "初始本金", min_value=0.0, value=_ACCOUNT_FIELD_DEFAULTS["initial_capital"], step=10_000.0,
+            )
+            new_max_pct = st.slider(
+                "單筆部位上限（占目前帳戶淨值）", 0.01, 1.0, _ACCOUNT_FIELD_DEFAULTS["max_position_pct"],
+            )
+            new_max_holdings = st.number_input(
+                "持股檔數上限", min_value=1, value=_ACCOUNT_FIELD_DEFAULTS["max_holdings_count"], step=1,
+            )
         with col3:
             new_holding_period = st.radio("持有週期類型", ["短線", "波段"], horizontal=True)
-            new_max_loss_pct = st.slider("單筆最大虧損（占目前帳戶淨值）", 0.001, 0.10, 0.01, format="%.3f")
+            new_max_loss_pct = st.slider(
+                "單筆最大虧損（占目前帳戶淨值）", 0.001, 0.10, _ACCOUNT_FIELD_DEFAULTS["max_loss_pct"],
+                format="%.3f",
+            )
             new_go_live_date = st.date_input(
                 "上線日（績效頁以此起算6個月觀察期，預設=今天）", value=date.today(),
             )
