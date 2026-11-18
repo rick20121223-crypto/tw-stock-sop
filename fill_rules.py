@@ -24,6 +24,15 @@ signal_date之後的第一個交易日起算），超過就直接取消（status
 依價格區間變動的最小跳動單位（tick size）表。這個簡化也隱含假設「鎖住
 當天的開盤價」沒有意義可用（即使實際上鎖住前可能有一小段時間還沒鎖），
 跟判斷鎖住的收盤價基準保持一致。
+
+處置股／暫停交易／下市（複查後新規則）：處置股允許買進（見
+eligibility.py），但持有中若轉為處置、暫停交易、下市，賣單會賣不掉，
+行為比照跌停鎖住——不設嘗試次數上限、一路順延到真的能賣為止
+（status="deferred"）。判斷依據不是價格（這幾種狀態不是用收盤價算出
+來的），而是呼叫端自己查好的`is_halted(code, date) -> bool`（例如查
+TWSE處置公告），只有賣單會用到。跌停鎖住跟處置/暫停交易/下市共用同一套
+「順延」機制（status沿用deferred/cancelled，不新增狀態值），但原因會
+分別記在`FillOutcome.defer_reason`，方便事後稽核分辨是哪一種鎖住。
 """
 
 from dataclasses import dataclass
@@ -34,6 +43,10 @@ from typing import Callable, Dict, List, Optional
 # 或 None（查無資料）
 PriceLookup = Callable[[str, date], Optional[Dict[str, float]]]
 
+# is_halted(code, date) -> True代表當天因處置/暫停交易/下市等公告原因賣不掉
+# （不分價格，由呼叫端自己查好官方公告資料傳入）
+HaltLookup = Callable[[str, date], bool]
+
 
 @dataclass
 class FillOutcome:
@@ -41,6 +54,7 @@ class FillOutcome:
     fill_date: Optional[date] = None
     fill_price: Optional[float] = None
     status: str = "pending"  # "filled" / "deferred" / "cancelled"
+    defer_reason: Optional[str] = None  # "漲停"/"跌停"/"處置或暫停交易或下市"；filled=True時維持None
 
 
 def _is_locked(side: str, close: float, prev_close: float, limit_pct: float) -> bool:
@@ -59,7 +73,8 @@ def default_defer_to_next_day(code: str, side: str, signal_date: date,
                                trading_dates: List[date], price_lookup: PriceLookup,
                                limit_pct: float = 0.10,
                                max_buy_defer_days: int = 3,
-                               max_sell_defer_days: Optional[int] = None) -> FillOutcome:
+                               max_sell_defer_days: Optional[int] = None,
+                               is_halted: Optional[HaltLookup] = None) -> FillOutcome:
     """預設策略：在signal_date之後的第一個交易日用那天的開盤價成交；若
     那天「鎖住」（買單遇漲停／賣單遇跌停，用收盤價判斷），順延到下一個
     可成交日，一樣用那天的開盤價成交，依此類推。signal_date當天本身永遠
@@ -81,33 +96,43 @@ def default_defer_to_next_day(code: str, side: str, signal_date: date,
 
     查無價格資料（price_lookup回傳None）時視為「還不知道能不能成交」，
     回傳status="deferred"但fill_date/fill_price都是None，不會往後硬跳過
-    去猜——之後有資料了再重新呼叫一次即可。"""
+    去猜——之後有資料了再重新呼叫一次即可。
+
+    is_halted：只有side="賣"才會檢查（買單不會遇到「持有中」這個問題，
+    合格性檢查在eligibility.py那層就先擋掉了）。回傳True的那天不查價格、
+    直接當作賣不掉處理，跟跌停鎖住共用順延機制，但defer_reason分開記。"""
     if side == "買":
         max_attempts = max_buy_defer_days + 1
     else:
         max_attempts = (max_sell_defer_days + 1) if max_sell_defer_days is not None else None
 
     candidates = [d for d in trading_dates if d > signal_date]
+    last_defer_reason: Optional[str] = None
     for attempt, d in enumerate(candidates):
         if max_attempts is not None and attempt >= max_attempts:
             break
+        if side == "賣" and is_halted is not None and is_halted(code, d):
+            last_defer_reason = "處置或暫停交易或下市"
+            continue
         price = price_lookup(code, d)
         if price is None:
-            return FillOutcome(filled=False, status="deferred")
+            return FillOutcome(filled=False, status="deferred", defer_reason=last_defer_reason)
         if _is_locked(side, price["close"], price["prev_close"], limit_pct):
+            last_defer_reason = "漲停" if side == "買" else "跌停"
             continue
         return FillOutcome(filled=True, fill_date=d, fill_price=price["open"], status="filled")
 
     if side == "買" and max_attempts is not None and len(candidates) >= max_attempts:
-        return FillOutcome(filled=False, status="cancelled")
-    return FillOutcome(filled=False, status="deferred")
+        return FillOutcome(filled=False, status="cancelled", defer_reason=last_defer_reason)
+    return FillOutcome(filled=False, status="deferred", defer_reason=last_defer_reason)
 
 
 def resolve_fill(code: str, side: str, signal_date: date, trading_dates: List[date],
                   price_lookup: PriceLookup, limit_pct: float = 0.10,
                   max_buy_defer_days: int = 3,
-                  max_sell_defer_days: Optional[int] = None) -> FillOutcome:
+                  max_sell_defer_days: Optional[int] = None,
+                  is_halted: Optional[HaltLookup] = None) -> FillOutcome:
     """目前使用中的成交規則入口，預設行為=default_defer_to_next_day。要換
     別的策略時，呼叫端改引用別的函式即可，不用改這個函式的呼叫方式。"""
     return default_defer_to_next_day(code, side, signal_date, trading_dates, price_lookup,
-                                      limit_pct, max_buy_defer_days, max_sell_defer_days)
+                                      limit_pct, max_buy_defer_days, max_sell_defer_days, is_halted)

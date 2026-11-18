@@ -231,6 +231,10 @@ with tab_fills:
             with col3:
                 f_is_etf = st.checkbox("是ETF")
                 f_is_day_trade = st.checkbox("當沖（買賣同一天）")
+                f_is_disposition = st.checkbox(
+                    "是處置股",
+                    help="處置股改規則後可以買進，但每筆交易要標記，績效統計頁才能分「有/無處置股」兩種口徑看",
+                )
                 f_source = st.selectbox(
                     "來源", ["manual", "system"],
                     index=0 if not linked_order or linked_order.source == "manual" else 1,
@@ -259,7 +263,7 @@ with tab_fills:
                         shares=int(f_shares), fill_date=f_fill_date, fee=fee, tax=tax,
                         is_day_trade=f_is_day_trade, source=f_source,
                         planned_stop_loss=f_stop_loss or None, exit_reason=f_exit_reason,
-                        order_id=linked_order_id or "",
+                        order_id=linked_order_id or "", is_disposition=f_is_disposition,
                     ))
                     if linked_order_id:
                         store.update_order_status(linked_order_id, "filled")
@@ -278,8 +282,8 @@ with tab_fills:
                     "id": f.id, "帳戶": f.account_id, "成交日期": f.fill_date, "代號": f.code,
                     "買賣": f.side, "成交價": f.price, "股數": f.shares,
                     "張數": round(f.shares / 1000, 3), "手續費": f.fee, "證交稅": f.tax,
-                    "當沖": f.is_day_trade, "來源": f.source, "預設停損價": f.planned_stop_loss,
-                    "出場理由": f.exit_reason,
+                    "當沖": f.is_day_trade, "處置股": f.is_disposition, "來源": f.source,
+                    "預設停損價": f.planned_stop_loss, "出場理由": f.exit_reason,
                 }
                 for f in sorted(fills, key=lambda f: f.fill_date, reverse=True)
             ]),

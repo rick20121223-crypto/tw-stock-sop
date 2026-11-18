@@ -127,6 +127,48 @@ class TestResolveFill(unittest.TestCase):
         self.assertFalse(outcome.filled)
         self.assertEqual(outcome.status, "deferred")
 
+    def test_sell_deferred_when_halted_without_checking_price(self):
+        """處置/暫停交易/下市不是用價格判斷的——is_halted回True的那天根本
+        不查price_lookup，直接當賣不掉，defer_reason要標記原因。"""
+        d0, d1, d2 = date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 3)
+        prices = {d2: {"open": 50.0, "close": 51.0, "prev_close": 50.0}}
+
+        def is_halted(code, d):
+            return d == d1
+
+        outcome = resolve_fill("2330", "賣", d0, [d0, d1, d2], _lookup_from(prices),
+                                is_halted=is_halted)
+        self.assertTrue(outcome.filled)
+        self.assertEqual(outcome.fill_date, d2)
+        self.assertEqual(outcome.fill_price, 50.0)
+
+    def test_sell_stays_deferred_while_halted_with_no_cap(self):
+        d0, d1, d2 = date(2026, 10, 10), date(2026, 10, 11), date(2026, 10, 12)
+
+        def is_halted(code, d):
+            return True
+
+        outcome = resolve_fill("2330", "賣", d0, [d0, d1, d2], _lookup_from({}),
+                                is_halted=is_halted)
+        self.assertFalse(outcome.filled)
+        self.assertEqual(outcome.status, "deferred")
+        self.assertEqual(outcome.defer_reason, "處置或暫停交易或下市")
+
+    def test_defer_reason_marks_limit_lock_cause(self):
+        d0, d1 = date(2026, 10, 20), date(2026, 10, 21)
+        prices = {d1: {"open": 91.0, "close": 90.0, "prev_close": 100.0}}  # 跌停鎖住
+        outcome = resolve_fill("2330", "賣", d0, [d0, d1], _lookup_from(prices))
+        self.assertFalse(outcome.filled)
+        self.assertEqual(outcome.status, "deferred")
+        self.assertEqual(outcome.defer_reason, "跌停")
+
+    def test_filled_outcome_has_no_defer_reason(self):
+        d0, d1 = date(2026, 10, 25), date(2026, 10, 26)
+        prices = {d1: {"open": 102.0, "close": 105.0, "prev_close": 100.0}}
+        outcome = resolve_fill("2330", "買", d0, [d0, d1], _lookup_from(prices))
+        self.assertTrue(outcome.filled)
+        self.assertIsNone(outcome.defer_reason)
+
     def test_sell_fills_after_unlocking_on_day_beyond_buy_cap(self):
         """賣單在第5個候選交易日才解鎖（超過買單的4次嘗試上限），仍然要能
         成交，證明賣單確實不受買單的上限約束。"""

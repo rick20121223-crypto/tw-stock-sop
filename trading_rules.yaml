@@ -24,7 +24,9 @@ liquidity:
   min_avg_trade_value_20d: 30000000   # 20日均成交值門檻（新台幣），低於此排除
 
 eligibility:
-  exclude_disposition: true         # 排除處置股
+  exclude_disposition: false        # 處置股改為可以買進(複查後決定)，但eligibility.is_eligible()
+                                     # 回傳的EligibilityResult.warnings會標記"是處置股"，不算進ineligible的reasons。
+                                     # 設回true可以復原成完全排除(例如想更保守時)。
   exclude_full_delivery: true       # 排除全額交割股
   exclude_new_listing: true         # 排除上市未滿一定交易日數的新股
   new_listing_min_trading_days: 60  # 上市未滿此交易日數視為新股（用日曆天數近似，非精確交易日曆）

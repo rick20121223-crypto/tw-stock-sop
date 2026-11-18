@@ -264,7 +264,7 @@ class GoogleSheetsLedgerStore(LedgerStore):
         self._invalidate("orders")
         return order.id
 
-    def update_order_status(self, order_id: str, status: str) -> None:
+    def update_order_status(self, order_id: str, status: str, defer_reason: str = "") -> None:
         """直接讀最新的(不吃快取)，才能確保行號正確。"""
         worksheet = self._worksheet("orders", _ORDER_FIELDS)
         records = self._retry(worksheet.get_all_records, LedgerReadError, "讀取委託")
@@ -272,6 +272,7 @@ class GoogleSheetsLedgerStore(LedgerStore):
             if row.get("id") == order_id:
                 order = _row_to_order(row)
                 order.status = status
+                order.defer_reason = defer_reason
                 updated_row = _order_to_row(order)
                 self._retry(
                     lambda: worksheet.update(f"A{i + 2}", [_to_sheet_row(updated_row, _ORDER_FIELDS)],

@@ -112,6 +112,19 @@ class TestCSVLedgerStore(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.update_order_status("not-an-id", "filled")
 
+    def test_update_order_status_records_defer_reason(self):
+        order_id = self.store.add_order(self._order())
+        self.store.update_order_status(order_id, "deferred", defer_reason="跌停")
+        orders = self.store.list_orders()
+        self.assertEqual(orders[0].status, "deferred")
+        self.assertEqual(orders[0].defer_reason, "跌停")
+
+    def test_update_order_status_defaults_defer_reason_to_empty(self):
+        order_id = self.store.add_order(self._order())
+        self.store.update_order_status(order_id, "filled")
+        orders = self.store.list_orders()
+        self.assertEqual(orders[0].defer_reason, "")
+
     def _fill(self, account_id="v1", code="2330", side="買", price=100.0, shares=1000):
         return Fill(account_id=account_id, code=code, side=side, price=price, shares=shares,
                     fill_date=date(2026, 11, 10), fee=142.0, planned_stop_loss=95.0)
@@ -130,6 +143,21 @@ class TestCSVLedgerStore(unittest.TestCase):
         self.store.add_fill(fill)
         fills = self.store.list_fills()
         self.assertEqual(fills[0].universe_version, "v1-固定清單-核心持股")
+
+    def test_fill_disposition_and_slippage_roundtrip(self):
+        fill = self._fill()
+        fill.is_disposition = True
+        fill.slippage_amount = 123.0
+        self.store.add_fill(fill)
+        fills = self.store.list_fills()
+        self.assertTrue(fills[0].is_disposition)
+        self.assertEqual(fills[0].slippage_amount, 123.0)
+
+    def test_fill_disposition_and_slippage_default_when_unset(self):
+        self.store.add_fill(self._fill())
+        fills = self.store.list_fills()
+        self.assertFalse(fills[0].is_disposition)
+        self.assertEqual(fills[0].slippage_amount, 0.0)
 
     def test_list_positions_derived_from_fills(self):
         self.store.add_fill(self._fill(side="買", shares=1000))

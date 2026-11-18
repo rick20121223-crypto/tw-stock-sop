@@ -91,12 +91,25 @@ class TestIsEligible(unittest.TestCase):
         self.assertEqual(len(result.reasons), 2)
 
     def test_disabled_check_is_skipped(self):
+        """exclude_disposition=False（目前trading_rules.yaml的預設）：處置股
+        不再判不合格，但要在warnings標記，不是靜默放行。"""
         result = is_eligible(
             code="2330", as_of_date=date(2026, 11, 14), listing_date=date(2000, 1, 1),
             avg_trade_value_20d=100_000_000.0, is_disposition=True, is_full_delivery=False,
             rules=_rules(exclude_disposition=False),
         )
         self.assertTrue(result.eligible)
+        self.assertEqual(result.reasons, [])
+        self.assertIn("處置股", result.warnings[0])
+
+    def test_non_disposition_stock_has_no_warnings(self):
+        result = is_eligible(
+            code="2330", as_of_date=date(2026, 11, 14), listing_date=date(2000, 1, 1),
+            avg_trade_value_20d=100_000_000.0, is_disposition=False, is_full_delivery=False,
+            rules=_rules(exclude_disposition=False),
+        )
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.warnings, [])
 
 
 if __name__ == "__main__":

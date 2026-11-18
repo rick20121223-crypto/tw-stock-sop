@@ -73,6 +73,25 @@ def calc_sell_tax(price: float, shares: int, is_etf: bool, is_day_trade: bool,
     return math.floor(price * shares * rate)
 
 
+def apply_slippage(price: float, shares: int, side: str, costs: Dict = COSTS) -> Tuple[float, float]:
+    """回傳(套用滑價後的成交價, 這筆滑價的總金額)。買單往上調（更貴地
+    買進）、賣單往下調（更便宜地賣出），兩者都是對交易者不利的方向，
+    總金額一律是正數。呼叫端把調整後的價格存進Fill.price（讓net_pnl
+    自然反映滑價影響），總金額存進Fill.slippage_amount（事後才能算出
+    「如果沒有滑價」的對照），跟fee/tax一樣是成交當下就固定、之後不會
+    重算。
+
+    costs["slippage"]["pct"]目前預設0.0（複查後決定：先把「可開關、可
+    對照」的機制搭好，實際數值等W4回測規格再訂，不要自己假設數字），
+    pct=0時回傳原價跟0，不影響現有任何成交記錄。"""
+    pct = costs.get("slippage", {}).get("pct", 0.0)
+    if pct <= 0:
+        return price, 0.0
+    slipped_price = price * (1 + pct) if side == "買" else price * (1 - pct)
+    slippage_amount = abs(round((slipped_price - price) * shares, 2))
+    return round(slipped_price, 2), slippage_amount
+
+
 @dataclass
 class Fill:
     account_id: str
@@ -90,7 +109,9 @@ class Fill:
     id: str = ""
     order_id: str = ""
     created_at: Optional[datetime] = None
-    universe_version: str = ""  # 建立這筆成交當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）。放最後面是遵守ledger_store.py docstring的欄位順序規則
+    universe_version: str = ""  # 建立這筆成交當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）
+    is_disposition: bool = False  # 成交當時是否為處置股（複查後新規則：處置股可買進，但要標記）
+    slippage_amount: float = 0.0  # 這筆成交已經套用的滑價總金額（見apply_slippage()），0=沒有滑價。放最後面是遵守ledger_store.py docstring的欄位順序規則
 
 
 @dataclass
@@ -110,6 +131,8 @@ class ClosedTrade:
     is_day_trade: bool
     source: str  # "system" 或 "manual"
     holding_days: int
+    is_disposition: bool = False  # 這一輪買賣的任何一筆fill有is_disposition=True就算True
+    slippage_cost: float = 0.0  # 這一輪買賣全部fill的slippage_amount加總
 
 
 @dataclass
@@ -352,6 +375,9 @@ def _finalize_round_trip(account_id: str, code: str, fills: List[_Chunk]) -> Clo
     entry_date = min(t.fill_date for t in unique_buys.values())
     exit_date = max(t.fill_date for t in unique_sells.values())
     is_day_trade_whole = all(t.is_day_trade for t in unique_sells.values())
+    all_trades = list(unique_buys.values()) + list(unique_sells.values())
+    is_disposition_whole = any(t.is_disposition for t in all_trades)
+    slippage_cost = sum(t.slippage_amount for t in all_trades)
 
     return ClosedTrade(
         account_id=account_id,
@@ -369,6 +395,8 @@ def _finalize_round_trip(account_id: str, code: str, fills: List[_Chunk]) -> Clo
         is_day_trade=is_day_trade_whole,
         source=next(iter(sources)),
         holding_days=(exit_date - entry_date).days,
+        is_disposition=is_disposition_whole,
+        slippage_cost=slippage_cost,
     )
 
 
@@ -387,19 +415,38 @@ class PerformanceStats:
     avg_holding_days: float
 
 
-def compute_stats(closed_trades: List[ClosedTrade], source: Optional[str] = None) -> PerformanceStats:
+def compute_stats(closed_trades: List[ClosedTrade], source: Optional[str] = None,
+                   disposition_filter: Optional[bool] = None,
+                   strip_slippage: bool = False) -> PerformanceStats:
     """win = net_pnl > 0；loss = net_pnl <= 0（打平算虧損，偏保守）。
     equity_curve 依exit_date排序累加；max_drawdown是累積損益曲線上任一
     高點到之後低點的最大跌幅（正數）。source給"system"或"manual"時只納入
     該來源的交易（例如只看系統自動單的績效，排除人工介入單），留None
     (預設)則不篩選、兩種來源都算。多帳戶比較請由呼叫端先依account_id
-    篩好closed_trades再各自呼叫這個函式，這裡不內建跨帳戶分組。"""
+    篩好closed_trades再各自呼叫這個函式，這裡不內建跨帳戶分組。
+
+    disposition_filter跟source是同一種用法：None(預設)不篩選，True只看
+    「有處置股」的交易(ClosedTrade.is_disposition，整輪交易只要有一筆
+    fill是處置股就算)，False只看完全不含處置股的交易。
+
+    strip_slippage=True時，統計數字改用「扣掉這輪交易已經吃掉的滑價
+    (slippage_cost)」的net_pnl計算，等於「假設沒有滑價」的對照口徑；
+    =False(預設)用實際net_pnl(已經含滑價，因為滑價已經反映在成交當下
+    的Fill.price裡)。目前R倍數(avg_r_multiple)不會隨這個開關調整——
+    ClosedTrade沒有保留原始risk_amount，只存了算好的r_multiple，等滑價
+    真的有非0數值時若要精確對照R倍數，需要回頭讓ClosedTrade多存一個
+    risk_amount欄位才能重算。"""
     if source is not None:
         closed_trades = [t for t in closed_trades if t.source == source]
+    if disposition_filter is not None:
+        closed_trades = [t for t in closed_trades if t.is_disposition == disposition_filter]
+
+    def _net_pnl(t: ClosedTrade) -> float:
+        return t.net_pnl + t.slippage_cost if strip_slippage else t.net_pnl
 
     total = len(closed_trades)
-    wins = [t.net_pnl for t in closed_trades if t.net_pnl > 0]
-    losses = [t.net_pnl for t in closed_trades if t.net_pnl <= 0]
+    wins = [_net_pnl(t) for t in closed_trades if _net_pnl(t) > 0]
+    losses = [_net_pnl(t) for t in closed_trades if _net_pnl(t) <= 0]
     win_rate = len(wins) / total if total else 0.0
     avg_win = sum(wins) / len(wins) if wins else 0.0
     avg_loss = sum(losses) / len(losses) if losses else 0.0
@@ -413,7 +460,7 @@ def compute_stats(closed_trades: List[ClosedTrade], source: Optional[str] = None
     equity_curve: List[Tuple[date, float]] = []
     cumulative = 0.0
     for t in ordered:
-        cumulative += t.net_pnl
+        cumulative += _net_pnl(t)
         equity_curve.append((t.exit_date, cumulative))
 
     max_drawdown = 0.0

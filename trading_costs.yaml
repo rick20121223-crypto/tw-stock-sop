@@ -29,3 +29,9 @@ securities_tax:
   etf_rate: 0.001            # 股票型ETF 0.1%，賣出時收，當沖也不減半
   day_trade_rate: 0.0015     # 一般股票現股當沖減半0.15%，不適用於ETF
   day_trade_discount_expires: "2027-12-31"  # 減半優惠落日日期
+
+slippage:
+  # 可調的滑價假設：買單成交價多付pct、賣單成交價少收pct，用
+  # performance.apply_slippage()套用。數值先留0（=關閉，等同沒有滑價），
+  # 實際規格(固定%、依流動性分級等)留到W4回測規格再訂，不要自己假設。
+  pct: 0.0

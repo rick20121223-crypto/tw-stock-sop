@@ -8,6 +8,7 @@ from performance import (
     Fill,
     PerformanceStats,
     Position,
+    apply_slippage,
     calc_fee,
     calc_sell_tax,
     check_live_trading_gate,
@@ -38,7 +39,8 @@ def _stats(total_trades=30, max_drawdown=100_000.0):
     )
 
 
-def _costs(discount: float = 1.0, min_fee_round_lot: float = 0, min_fee_odd_lot: float = 0) -> dict:
+def _costs(discount: float = 1.0, min_fee_round_lot: float = 0, min_fee_odd_lot: float = 0,
+           slippage_pct: float = 0.0) -> dict:
     return {
         "brokerage_fee": {
             "legal_rate": 0.001425,
@@ -52,6 +54,7 @@ def _costs(discount: float = 1.0, min_fee_round_lot: float = 0, min_fee_odd_lot:
             "day_trade_rate": 0.0015,
             "day_trade_discount_expires": "2027-12-31",
         },
+        "slippage": {"pct": slippage_pct},
     }
 
 
@@ -124,6 +127,25 @@ class TestFees(unittest.TestCase):
         self.assertEqual(tax, 333)
 
 
+class TestSlippage(unittest.TestCase):
+    def test_zero_pct_returns_original_price_and_no_slippage(self):
+        """複查後決定：先把機制搭好，數值留0，等W4回測規格再訂——pct=0時
+        不應該改變任何現有成交記錄。"""
+        price, amount = apply_slippage(100.0, 1000, "買", costs=_costs())
+        self.assertEqual(price, 100.0)
+        self.assertEqual(amount, 0.0)
+
+    def test_buy_slippage_raises_price(self):
+        price, amount = apply_slippage(100.0, 1000, "買", costs=_costs(slippage_pct=0.002))
+        self.assertEqual(price, 100.2)
+        self.assertEqual(amount, 200.0)
+
+    def test_sell_slippage_lowers_price(self):
+        price, amount = apply_slippage(100.0, 1000, "賣", costs=_costs(slippage_pct=0.002))
+        self.assertEqual(price, 99.8)
+        self.assertEqual(amount, 200.0)
+
+
 class TestMatchFifo(unittest.TestCase):
     def test_single_winning_trade(self):
         costs = _costs()
@@ -145,6 +167,24 @@ class TestMatchFifo(unittest.TestCase):
         self.assertFalse(ct.is_day_trade)
         self.assertEqual(ct.source, "system")
         self.assertEqual(ct.shares, 1000)
+
+    def test_disposition_flag_and_slippage_aggregate_across_fills(self):
+        """只要這一輪倉位裡有一筆fill是處置股，整輪ClosedTrade就標記
+        is_disposition=True；slippage_cost是這一輪所有fill的
+        slippage_amount加總（跟fee/tax同一種「每筆fill各自固定好，
+        match_fifo只負責加總」的模式）。"""
+        costs = _costs()
+        buy = Fill(id="b1", account_id="v1", code="2330", side="買", price=101, shares=1000,
+                   fill_date=date(2026, 1, 5), fee=calc_fee(101, 1000, costs),
+                   is_disposition=True, slippage_amount=50.0)
+        sell = Fill(id="s1", account_id="v1", code="2330", side="賣", price=110, shares=1000,
+                    fill_date=date(2026, 1, 20), fee=calc_fee(110, 1000, costs),
+                    tax=calc_sell_tax(110, 1000, is_etf=False, is_day_trade=False, costs=costs),
+                    is_disposition=False, slippage_amount=30.0)
+        [ct] = match_fifo([buy, sell])
+
+        self.assertTrue(ct.is_disposition)
+        self.assertEqual(ct.slippage_cost, 80.0)
 
     def test_single_losing_trade(self):
         costs = _costs()
@@ -345,12 +385,14 @@ class TestComputePendingDividendCash(unittest.TestCase):
 
 
 class TestComputeStats(unittest.TestCase):
-    def _closed_trade(self, net_pnl, r_multiple, exit_date, holding_days, source="system"):
+    def _closed_trade(self, net_pnl, r_multiple, exit_date, holding_days, source="system",
+                       is_disposition=False, slippage_cost=0.0):
         return ClosedTrade(
             account_id="v1", code="2330", entry_date=exit_date, exit_date=exit_date, shares=1000,
             avg_entry_price=100.0, avg_exit_price=100.0, buy_cost=0.0, sell_cost=0.0,
             gross_pnl=net_pnl, net_pnl=net_pnl, r_multiple=r_multiple,
             is_day_trade=False, source=source, holding_days=holding_days,
+            is_disposition=is_disposition, slippage_cost=slippage_cost,
         )
 
     def test_stats_over_three_trades(self):
@@ -395,6 +437,31 @@ class TestComputeStats(unittest.TestCase):
         self.assertEqual(stats_all.total_trades, 2)
         self.assertEqual(stats_system_only.total_trades, 1)
         self.assertEqual(stats_system_only.avg_win, 8369)
+
+    def test_disposition_filter_splits_two_views(self):
+        ct_normal = self._closed_trade(8369, 1.0, date(2026, 1, 20), 15, is_disposition=False)
+        ct_disposition = self._closed_trade(-500, -0.5, date(2026, 1, 25), 5, is_disposition=True)
+        stats_all = compute_stats([ct_normal, ct_disposition])
+        stats_no_disposition = compute_stats([ct_normal, ct_disposition], disposition_filter=False)
+        stats_disposition_only = compute_stats([ct_normal, ct_disposition], disposition_filter=True)
+
+        self.assertEqual(stats_all.total_trades, 2)
+        self.assertEqual(stats_no_disposition.total_trades, 1)
+        self.assertEqual(stats_no_disposition.avg_win, 8369)
+        self.assertEqual(stats_disposition_only.total_trades, 1)
+        self.assertEqual(stats_disposition_only.avg_loss, -500)
+
+    def test_strip_slippage_adds_back_slippage_cost(self):
+        """strip_slippage=True是「假設沒有滑價」的對照口徑：net_pnl要加回
+        slippage_cost。目前pct預設0，這裡直接給slippage_cost驗證機制本身，
+        不等W4才測。"""
+        ct = self._closed_trade(8000, 1.0, date(2026, 1, 20), 15, slippage_cost=300)
+        stats_actual = compute_stats([ct])
+        stats_no_slippage = compute_stats([ct], strip_slippage=True)
+
+        self.assertEqual(stats_actual.avg_win, 8000)
+        self.assertEqual(stats_no_slippage.avg_win, 8300)
+        self.assertEqual(stats_no_slippage.equity_curve, [(date(2026, 1, 20), 8300)])
 
 
 class TestCompareToBenchmark(unittest.TestCase):

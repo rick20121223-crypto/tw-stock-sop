@@ -64,6 +64,13 @@ selected_ids = st.multiselect(
 )
 source_choice = st.radio("來源篩選", ["全部", "只看system單", "只看manual單"], index=1, horizontal=True)
 source_filter = {"全部": None, "只看system單": "system", "只看manual單": "manual"}[source_choice]
+disposition_choice = st.radio("處置股篩選", ["全部", "只看無處置股", "只看有處置股"], index=0, horizontal=True)
+disposition_filter = {"全部": None, "只看無處置股": False, "只看有處置股": True}[disposition_choice]
+slippage_choice = st.radio(
+    "滑價口徑", ["有滑價（實際）", "無滑價（對照）"], index=0, horizontal=True,
+    help="目前trading_costs.yaml的滑價pct預設0，兩個口徑數字會一樣；等W4訂出實際滑價數值後才會看出差異",
+)
+strip_slippage = slippage_choice == "無滑價（對照）"
 years_back = st.slider("與0050對照：FinMind回溯年數", 1, 5, 2)
 
 if not selected_ids:
@@ -111,7 +118,7 @@ def _render_account(account_id: str) -> None:
     if not closed:
         st.info("這個帳戶（在目前的來源篩選下）沒有已平倉的交易。")
     else:
-        stats = compute_stats(closed)
+        stats = compute_stats(closed, disposition_filter=disposition_filter, strip_slippage=strip_slippage)
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("總交易筆數", stats.total_trades)
         col2.metric("勝率", f"{stats.win_rate:.1%}")

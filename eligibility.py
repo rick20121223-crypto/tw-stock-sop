@@ -39,6 +39,7 @@ TRADING_RULES = _load_rules()
 class EligibilityResult:
     eligible: bool
     reasons: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)  # 不影響eligible，提醒"合格但有狀況"（目前只有處置股會用到）
 
 
 def is_eligible(code: str, as_of_date: date, listing_date: Optional[date],
@@ -46,13 +47,22 @@ def is_eligible(code: str, as_of_date: date, listing_date: Optional[date],
                  is_full_delivery: bool, rules: Dict = TRADING_RULES) -> EligibilityResult:
     """listing_date/avg_trade_value_20d為None時視為查無資料，fail closed
     （判定不合格）。is_disposition/is_full_delivery由呼叫端自行查好傳入，
-    這裡只套用trading_rules.yaml裡的開關跟門檻。"""
+    這裡只套用trading_rules.yaml裡的開關跟門檻。
+
+    exclude_disposition=False（目前預設）時，處置股不再判不合格，但會
+    在warnings標記"是處置股"（複查後決定：處置股改為可以買進，但每筆
+    交易要標記，讓之後的績效統計分「有處置股/無處置股」兩種口徑看）。
+    exclude_disposition=True時維持原行為，直接判不合格（進reasons）。"""
     reasons: List[str] = []
+    warnings: List[str] = []
     elig_cfg = rules["eligibility"]
     liq_cfg = rules["liquidity"]
 
-    if elig_cfg.get("exclude_disposition", True) and is_disposition:
-        reasons.append(f"{code}是處置股")
+    if is_disposition:
+        if elig_cfg.get("exclude_disposition", False):
+            reasons.append(f"{code}是處置股")
+        else:
+            warnings.append(f"{code}是處置股")
 
     if elig_cfg.get("exclude_full_delivery", True) and is_full_delivery:
         reasons.append(f"{code}是全額交割股")
@@ -72,4 +82,4 @@ def is_eligible(code: str, as_of_date: date, listing_date: Optional[date],
     elif avg_trade_value_20d < min_value:
         reasons.append(f"{code}20日均成交值{avg_trade_value_20d:,.0f}低於門檻{min_value:,.0f}")
 
-    return EligibilityResult(eligible=(len(reasons) == 0), reasons=reasons)
+    return EligibilityResult(eligible=(len(reasons) == 0), reasons=reasons, warnings=warnings)

@@ -73,7 +73,8 @@ class Order:
     priority_reason: str = ""  # 排序依據的文字說明，供事後稽核「為什麼這張單被排擠掉」
     id: str = ""
     created_at: Optional[datetime] = None
-    universe_version: str = ""  # 產生這張委託當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）。放最後面是遵守模組docstring的欄位順序規則
+    universe_version: str = ""  # 產生這張委託當時使用的股票池版本（見trading_rules.yaml的stock_pool.version_tag）
+    defer_reason: str = ""  # status為deferred/cancelled時，記錄是哪種原因(見fill_rules.FillOutcome.defer_reason，例如"跌停"/"處置或暫停交易或下市")。放最後面是遵守模組docstring的欄位順序規則
 
 
 def get_secret(key: str) -> str:
@@ -196,6 +197,7 @@ def _row_to_order(row: dict) -> Order:
         priority_reason=_s(row.get("priority_reason", "")),
         universe_version=_s(row.get("universe_version", "")),
         created_at=datetime.fromisoformat(_s(row["created_at"])) if row.get("created_at") else None,
+        defer_reason=_s(row.get("defer_reason", "")),
     )
 
 
@@ -231,6 +233,8 @@ def _row_to_fill(row: dict) -> Fill:
         universe_version=_s(row.get("universe_version", "")),
         order_id=_s(row.get("order_id", "")),
         created_at=datetime.fromisoformat(_s(row["created_at"])) if row.get("created_at") else None,
+        is_disposition=_s(row.get("is_disposition")) in ("True", "true", "1"),
+        slippage_amount=float(row["slippage_amount"]) if row.get("slippage_amount") else 0.0,
     )
 
 
@@ -298,7 +302,7 @@ class LedgerStore(ABC):
     def add_order(self, order: Order) -> str: ...
 
     @abstractmethod
-    def update_order_status(self, order_id: str, status: str) -> None: ...
+    def update_order_status(self, order_id: str, status: str, defer_reason: str = "") -> None: ...
 
     @abstractmethod
     def list_fills(self, account_id: Optional[str] = None) -> List[Fill]: ...
@@ -364,11 +368,16 @@ class CSVLedgerStore(LedgerStore):
         _write_csv(self.orders_path, _ORDER_FIELDS, [_order_to_row(o) for o in orders])
         return order.id
 
-    def update_order_status(self, order_id: str, status: str) -> None:
+    def update_order_status(self, order_id: str, status: str, defer_reason: str = "") -> None:
+        """defer_reason只在status為deferred/cancelled時有意義（見
+        fill_rules.FillOutcome.defer_reason），其他狀態留空字串即可，
+        不會清掉舊值——呼叫端不傳就是空字串，刻意覆寫掉舊的defer_reason，
+        跟status一樣每次呼叫都是完整覆寫，不是merge。"""
         orders = [_row_to_order(r) for r in _read_csv(self.orders_path)]
         for o in orders:
             if o.id == order_id:
                 o.status = status
+                o.defer_reason = defer_reason
                 _write_csv(self.orders_path, _ORDER_FIELDS, [_order_to_row(x) for x in orders])
                 return
         raise ValueError(f"找不到 order_id={order_id!r}")
