@@ -394,6 +394,12 @@ add_rules:
   volume_bias_min: 0      # 量能不可偏空
   addon_ma_bias: 4        # 均線偏多分數達此值且量能為正 → 升級為加碼（否則只算買進）
   weekly_all_synced_label: "加碼（各週期已同步翻多）"
+  # 2026-11-18查核：這個鍵只有watch_rules.combine_timeframes_mode.mode=
+  # "legacy"時才會被讀到（sop_decision.py的_combine_timeframes_legacy()）。
+  # 目前預設模式是"day_60m_primary"，_combine_timeframes_day_60m_primary()
+  # 完全沒有參照這個鍵，是用自己一套「只能降級、不能跳級」的字串
+  # （"加碼（{同步週期}同步翻多，以{primary_long}為主）"）達到類似效果。
+  # 不是bug，只是這個鍵在預設模式下不生效，只有手動切回legacy模式才會用到。
 
 # ==================================================================
 # 觀望 watch_rules（含強制降級為觀望的規則）
@@ -466,6 +472,12 @@ watch_rules:
   combine_timeframes_ambiguous_guard:
     forbid_ambiguous_partial_bullish: true
     replacement_conclusion: "觀望（各週期訊號尚未同步翻多，依SOP不可輸出模糊結論，暫不追價）"
+    # 2026-11-18查核：同weekly_all_synced_label，這整組設定只在
+    # combine_timeframes_mode.mode="legacy"時才會被讀到（見下方
+    # combine_timeframes_mode的mode說明），目前預設"day_60m_primary"
+    # 完全不會用到這個replacement_conclusion字串。day_60m_primary本身
+    # 用「只能降級、不能跳級」的結構達到類似的保守效果，不是漏接，只是
+    # 兩套模式各自獨立，不要誤以為這組設定在目前預設模式下生效中。
 
   # 2026-10-23新增：combine_timeframes()的跨週期合併權重模式。
   # "legacy"：週/日平權（任一個翻多就算長天期偏多、任一個轉弱直接硬
