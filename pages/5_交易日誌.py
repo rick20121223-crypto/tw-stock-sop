@@ -116,8 +116,29 @@ if not accounts:
     st.stop()
 
 account_ids = [a.account_id for a in accounts]
-view_account = st.selectbox("目前檢視帳戶", ["全部"] + account_ids)
-filter_account_id = None if view_account == "全部" else view_account
+col_f1, col_f2, col_f3 = st.columns(3)
+with col_f1:
+    view_account = st.selectbox("目前檢視帳戶", ["全部"] + account_ids)
+    filter_account_id = None if view_account == "全部" else view_account
+with col_f2:
+    filter_code = st.text_input("代號篩選（可不填，比對完全相同）").strip()
+with col_f3:
+    filter_date_range = st.date_input(
+        "日期區間篩選（委託用訊號日期，成交用成交日期；留空=不篩）",
+        value=(), key="filter_date_range",
+    )
+filter_start, filter_end = (filter_date_range + (None, None))[:2] if filter_date_range else (None, None)
+
+
+def _in_date_range(d) -> bool:
+    if d is None:
+        return filter_start is None
+    if filter_start and d < filter_start:
+        return False
+    if filter_end and d > filter_end:
+        return False
+    return True
+
 
 tab_orders, tab_fills, tab_positions = st.tabs(["委託 Orders", "成交 Fills", "持倉 Positions"])
 
@@ -155,6 +176,9 @@ with tab_orders:
                     st.rerun()
 
     orders = store.list_orders(account_id=filter_account_id)
+    if filter_code:
+        orders = [o for o in orders if o.code == filter_code]
+    orders = [o for o in orders if _in_date_range(o.signal_date)]
     st.subheader(f"委託紀錄（{len(orders)} 筆）")
     if orders:
         st.dataframe(
@@ -243,6 +267,9 @@ with tab_fills:
                     st.rerun()
 
     fills = store.list_fills(account_id=filter_account_id)
+    if filter_code:
+        fills = [f for f in fills if f.code == filter_code]
+    fills = [f for f in fills if _in_date_range(f.fill_date)]
     st.subheader(f"成交紀錄（{len(fills)} 筆）")
     if fills:
         st.dataframe(
@@ -266,6 +293,8 @@ with tab_fills:
 # ------------------------------------------------------------------
 with tab_positions:
     positions = store.list_positions(account_id=filter_account_id)
+    if filter_code:
+        positions = [p for p in positions if p.code == filter_code]
     st.subheader(f"目前持倉（{len(positions)} 檔，由成交紀錄用FIFO算出，不能直接編輯）")
     if positions:
         st.dataframe(
