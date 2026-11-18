@@ -272,6 +272,20 @@ indicators:
     role: "secondary"          # 二線輔助指標，與 MTM 並列參考，不強制優先順序
     note: "預設參考值，非但丁老師原始教材明確數字，可依實戰經驗調整"
 
+  # 2026-11-18新增：課程筆記提到的「CCI最快示警→MTM同步確認→KD365雙重
+  # 確認→均線裁決」只是訊號出現時序的說明順序，使用者確認不影響判讀
+  # （結論/分數完全不變），所以只做成一句純提示文字附加在caveats裡，
+  # 不重排reasons/caveats既有的顯示順序（現有列表是依Step1~Step6的
+  # 執行順序append，牽動既有測試對reasons內容的斷言，改動範圍較大，
+  # 這條規則本身不需要付出那個風險）。只有CCI/MTM/KD365/均線「同時」
+  # 適用的60分線才顯示（MTM只支援60分，見indicators.mtm.
+  # applicable_timeframes），其他週期因為指標本身就不全套用，顯示這句
+  # 時序提示沒有意義。
+  signal_priority_note:
+    enabled: true
+    applicable_timeframes: ["60分"]
+    text: "訊號時序參考：CCI最快示警 → MTM同步確認 → KD365雙重確認 → 均線裁決（僅供排序理解，不影響判讀結論）"
+
   left_side_platform:
     exclude_recent_bars: 5   # 排除最近幾根K棒，避免抓到自己
     pivot_window: 5          # 局部高低點判斷的前後窗口

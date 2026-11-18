@@ -1424,6 +1424,12 @@ def evaluate_timeframe(df: pd.DataFrame, timeframe_label: str) -> Verdict:
     mtm_exit_alert = _step5_mtm(df, tf, latest, reasons)
     cci_exit_alert, cci_bias = _step5b_cci(df, tf, latest, reasons, caveats)
 
+    # 2026-11-18新增：CCI→MTM→KD365→均線的訊號時序提示，純文字、不影響
+    # score/conclusion（見sop_rules.yaml的signal_priority_note說明）。
+    priority_note_cfg = RULES["indicators"].get("signal_priority_note", {})
+    if priority_note_cfg.get("enabled") and tf in priority_note_cfg.get("applicable_timeframes", []):
+        caveats.append(priority_note_cfg["text"])
+
     fast_col = FAST_MA.get(tf)
     fast_slope = ma_slope(df, fast_col, lookback=slope_lookback) if fast_col else "資料不足"
     fast_slope_up = fast_slope == "上揚"
