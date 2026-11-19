@@ -580,6 +580,15 @@ class GateResult:
     forward_vs_backtest_note: str = "尚未串接"  # 占位欄位，前向結果與回測是否相近，之後再接
 
 
+def compute_max_drawdown_pct(stats: PerformanceStats, base_equity: float) -> Optional[float]:
+    """把stats.max_drawdown（絕對金額）換算成占base_equity（通常傳帳戶的
+    initial_capital）的比例。base_equity為0（或None等falsy值）時回傳None
+    （算不出有意義的百分比）。check_live_trading_gate()內部跟績效統計頁
+    上半部統計卡片的「最大回撤」百分比都呼叫這個函式，確保兩處用的是
+    同一套公式、數字對得起來，不會各自重算一次。"""
+    return (stats.max_drawdown / base_equity) if base_equity else None
+
+
 def check_live_trading_gate(stats: PerformanceStats, base_equity: float,
                              portfolio_return: Optional[float],
                              benchmark_return: Optional[float],
@@ -594,7 +603,7 @@ def check_live_trading_gate(stats: PerformanceStats, base_equity: float,
 
     trade_count_ok = stats.total_trades >= gate_cfg["min_trade_count"]
 
-    max_drawdown_pct = (stats.max_drawdown / base_equity) if base_equity else None
+    max_drawdown_pct = compute_max_drawdown_pct(stats, base_equity)
     max_drawdown_ok = max_drawdown_pct is not None and max_drawdown_pct <= gate_cfg["max_drawdown_pct"]
 
     if portfolio_return is None or benchmark_return is None:

@@ -14,6 +14,7 @@ from performance import (
     check_live_trading_gate,
     compare_to_benchmark,
     compute_daily_equity,
+    compute_max_drawdown_pct,
     compute_pending_dividend_cash,
     compute_positions,
     compute_stats,
@@ -526,6 +527,32 @@ class TestComputeDailyEquity(unittest.TestCase):
         self.assertEqual(result.positions_value, 0.0)
         self.assertEqual(result.total_equity, 1_000_000.0)
         self.assertEqual(result.cumulative_pnl, 0.0)
+
+
+class TestComputeMaxDrawdownPct(unittest.TestCase):
+    """績效統計頁上半部統計卡片的「最大回撤（占帳戶淨值）」跟下方放行
+    實單標準面板共用這個函式，這裡確認兩處數字對得起來、口徑一致。"""
+
+    def test_divides_by_base_equity(self):
+        stats = _stats(max_drawdown=150_000.0)
+        pct = compute_max_drawdown_pct(stats, base_equity=1_000_000.0)
+        self.assertAlmostEqual(pct, 0.15)
+
+    def test_matches_check_live_trading_gate_result(self):
+        """同一組輸入丟進compute_max_drawdown_pct()跟check_live_trading_gate()，
+        兩邊算出來的max_drawdown_pct要完全一樣——這就是避免頁面上下兩個
+        「最大回撤」數字對不起來的那個保證。"""
+        stats = _stats(total_trades=30, max_drawdown=100_000.0)
+        direct_pct = compute_max_drawdown_pct(stats, base_equity=1_000_000.0)
+        gate = check_live_trading_gate(
+            stats, base_equity=1_000_000.0, portfolio_return=0.12, benchmark_return=0.05,
+            rules=_gate_rules(),
+        )
+        self.assertEqual(direct_pct, gate.max_drawdown_pct)
+
+    def test_zero_base_equity_returns_none(self):
+        stats = _stats(max_drawdown=100_000.0)
+        self.assertIsNone(compute_max_drawdown_pct(stats, base_equity=0.0))
 
 
 class TestCheckLiveTradingGate(unittest.TestCase):

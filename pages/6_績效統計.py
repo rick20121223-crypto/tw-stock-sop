@@ -1,7 +1,8 @@
 """
 績效統計 — 讀取「交易日誌」的成交(fills)紀錄，用performance.py配對成
-完整交易，呈現勝率/盈虧比/期望值/R倍數/權益曲線/最大回撤/持有天數/與
-0050對照等統計。支援多帳戶並排比較，可切換只看system單/manual單/全部，
+完整交易，呈現勝率/盈虧比/期望值/R倍數/權益曲線/最大回撤（元＋占帳戶淨值
+百分比兩種單位）/持有天數/與0050對照等統計。支援多帳戶並排比較，可切換
+只看system單/manual單/全部，
 預設只看system單——放行實單標準不受這個篩選影響，一律固定只用system單
 計算，避免練習用的manual單意外影響這個高風險結論。
 
@@ -23,7 +24,13 @@ import streamlit as st
 
 from backtest.data_fetch import detect_price_gaps, fetch_total_return_daily
 from ledger_store import get_ledger_store, get_secret, require_pin
-from performance import check_live_trading_gate, compare_to_benchmark, compute_stats, match_fifo
+from performance import (
+    check_live_trading_gate,
+    compare_to_benchmark,
+    compute_max_drawdown_pct,
+    compute_stats,
+    match_fifo,
+)
 
 st.set_page_config(page_title="績效統計", layout="wide", page_icon="📊")
 
@@ -134,7 +141,17 @@ def _render_account(account_id: str) -> None:
             help=f"{stats.trades_with_r}/{stats.total_trades} 筆有填停損價，僅這些筆數納入R倍數統計",
         )
         col8.metric("平均持有天數", f"{stats.avg_holding_days:.1f}")
-        st.metric("最大回撤", f"{stats.max_drawdown:,.0f}")
+
+        col_dd1, col_dd2 = st.columns(2)
+        col_dd1.metric("最大回撤（元）", f"{stats.max_drawdown:,.0f}")
+        dd_pct = compute_max_drawdown_pct(stats, account.initial_capital)
+        col_dd2.metric(
+            "最大回撤（占帳戶淨值）",
+            "—" if dd_pct is None else f"{dd_pct:.1%}",
+            help="跟下方「放行實單標準」面板的最大回撤同一套公式(金額÷帳戶初始本金)，"
+                 "但這裡納入的交易筆數依上方來源篩選；放行標準固定只用system單計算，兩者"
+                 "篩選條件不同時數字不會一樣。",
+        )
 
         if stats.equity_curve:
             curve_df = pd.DataFrame(stats.equity_curve, columns=["日期", "累積損益"])
