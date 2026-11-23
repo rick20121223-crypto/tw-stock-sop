@@ -1,148 +1,148 @@
 {
-  "week_start": "2026-11-09",
-  "week_end": "2026-11-13",
-  "generated_at": "2026-11-16",
+  "week_start": "2026-11-16",
+  "week_end": "2026-11-20",
+  "generated_at": "2026-11-23",
   "buy": [
     {
-      "code": "1802",
+      "code": "9933",
       "market": "TW",
-      "name": "台玻",
-      "net": 261969389,
+      "name": "中鼎",
+      "net": 44554679,
       "days": 5
     },
     {
       "code": "2610",
       "market": "TW",
       "name": "華航",
-      "net": 123341710,
+      "net": 41582794,
       "days": 5
     },
     {
-      "code": "2618",
+      "code": "2890",
       "market": "TW",
-      "name": "長榮航",
-      "net": 74723859,
+      "name": "永豐金",
+      "net": 32855502,
       "days": 5
     },
     {
       "code": "2891",
       "market": "TW",
       "name": "中信金",
-      "net": 47945759,
-      "days": 5
-    },
-    {
-      "code": "2885",
-      "market": "TW",
-      "name": "元大金",
-      "net": 39880866,
-      "days": 5
-    },
-    {
-      "code": "2355",
-      "market": "TW",
-      "name": "敬鵬",
-      "net": 39639261,
+      "net": 24934422,
       "days": 5
     },
     {
       "code": "2886",
       "market": "TW",
       "name": "兆豐金",
-      "net": 33765056,
+      "net": 22493482,
       "days": 5
     },
     {
-      "code": "4927",
+      "code": "2618",
       "market": "TW",
-      "name": "泰鼎-KY",
-      "net": 32661146,
+      "name": "長榮航",
+      "net": 22273648,
       "days": 5
     },
     {
-      "code": "1326",
+      "code": "2892",
       "market": "TW",
-      "name": "台化",
-      "net": 29116641,
-      "days": 5
-    },
-    {
-      "code": "1303",
-      "market": "TW",
-      "name": "南亞",
-      "net": 26488653,
-      "days": 5
-    }
-  ],
-  "sell": [
-    {
-      "code": "2002",
-      "market": "TW",
-      "name": "中鋼",
-      "net": -61871269,
-      "days": 5
-    },
-    {
-      "code": "2324",
-      "market": "TW",
-      "name": "仁寶",
-      "net": -61141136,
-      "days": 5
-    },
-    {
-      "code": "6770",
-      "market": "TW",
-      "name": "力積電",
-      "net": -51032904,
-      "days": 5
-    },
-    {
-      "code": "2356",
-      "market": "TW",
-      "name": "英業達",
-      "net": -41043106,
+      "name": "第一金",
+      "net": 19805929,
       "days": 5
     },
     {
       "code": "2027",
       "market": "TW",
       "name": "大成鋼",
-      "net": -39586477,
+      "net": 19684533,
       "days": 5
     },
     {
-      "code": "2105",
+      "code": "9904",
       "market": "TW",
-      "name": "正新",
-      "net": -19832767,
+      "name": "寶成",
+      "net": 19539195,
       "days": 5
     },
     {
-      "code": "2382",
+      "code": "5880",
       "market": "TW",
-      "name": "廣達",
-      "net": -18339876,
+      "name": "合庫金",
+      "net": 18443437,
+      "days": 5
+    }
+  ],
+  "sell": [
+    {
+      "code": "1802",
+      "market": "TW",
+      "name": "台玻",
+      "net": -106176427,
+      "days": 5
+    },
+    {
+      "code": "2002",
+      "market": "TW",
+      "name": "中鋼",
+      "net": -85891752,
+      "days": 5
+    },
+    {
+      "code": "2324",
+      "market": "TW",
+      "name": "仁寶",
+      "net": -46062845,
+      "days": 5
+    },
+    {
+      "code": "1303",
+      "market": "TW",
+      "name": "南亞",
+      "net": -44672140,
       "days": 5
     },
     {
       "code": "1605",
       "market": "TW",
       "name": "華新",
-      "net": -15585549,
+      "net": -36102326,
       "days": 5
     },
     {
-      "code": "2812",
+      "code": "2884",
       "market": "TW",
-      "name": "台中銀",
-      "net": -15568523,
+      "name": "玉山金",
+      "net": -34370666,
       "days": 5
     },
     {
-      "code": "3481",
+      "code": "2834",
       "market": "TW",
-      "name": "群創",
-      "net": -15189639,
+      "name": "臺企銀",
+      "net": -29291305,
+      "days": 5
+    },
+    {
+      "code": "2317",
+      "market": "TW",
+      "name": "鴻海",
+      "net": -22284418,
+      "days": 5
+    },
+    {
+      "code": "6456",
+      "market": "TW",
+      "name": "GIS-KY",
+      "net": -17262716,
+      "days": 5
+    },
+    {
+      "code": "5871",
+      "market": "TW",
+      "name": "中租-KY",
+      "net": -15742876,
       "days": 5
     }
   ],
